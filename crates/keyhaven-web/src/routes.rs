@@ -94,6 +94,11 @@ struct ImportBody {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenVaultBody {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultLocationBody {
     path: String,
@@ -127,6 +132,8 @@ struct SessionView {
 pub fn router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/vault-exists", get(vault_exists))
+        .route("/api/vaults/discover", get(discover_vaults))
+        .route("/api/vaults/open", post(open_existing_vault))
         .route("/api/create-vault", post(create_vault))
         .route("/api/unlock", post(unlock))
         .route("/api/lock", post(lock))
@@ -177,6 +184,24 @@ pub fn router(state: AppState) -> Router {
 
 async fn vault_exists(State(state): State<AppState>) -> impl IntoResponse {
     Json(state.vault_exists())
+}
+
+async fn discover_vaults(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.discover_vaults())
+}
+
+async fn open_existing_vault(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<OpenVaultBody>,
+) -> Response {
+    if let Err(resp) = state.require_origin(&headers) {
+        return resp;
+    }
+    match state.open_existing_vault(&body.path) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
 }
 
 async fn session(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {

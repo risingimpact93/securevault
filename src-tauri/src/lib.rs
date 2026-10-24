@@ -177,15 +177,9 @@ fn device_id(app: &AppHandle) -> Result<String, String> {
 
 fn remember_vault_path(app: &AppHandle, path: PathBuf) -> Result<(), String> {
     let mut local = ensure_local(app)?;
-    local.vault_path = path.clone();
-    sync::save_local_config(
-        &local.data_dir,
-        &sync::LocalConfig {
-            device_id: local.device_id.clone(),
-            vault_path: Some(path),
-        },
-    )
-    .map_err(err)?;
+    let saved = sync::save_vault_path(&local.data_dir, &local.device_id, &path).map_err(err)?;
+    local.device_id = saved.device_id;
+    local.vault_path = saved.vault_path.unwrap_or(path);
     let state = app.state::<AppState>();
     if let Ok(mut guard) = state.local.lock() {
         *guard = Some(local);
@@ -253,6 +247,29 @@ fn vault_exists(app: AppHandle) -> Result<bool, String> {
     let path = vault_path(&app)?;
     let placeholder = sync::icloud_placeholder(&path).is_some_and(|candidate| candidate.exists());
     Ok(path.exists() || placeholder)
+}
+
+#[tauri::command]
+fn discover_vaults() -> Result<Vec<sync::DiscoveredVault>, String> {
+    Ok(sync::discover_icloud_vaults())
+}
+
+#[tauri::command]
+fn open_existing_vault(app: AppHandle, state: State<AppState>, path: String) -> Result<sync::OpenVaultStatus, String> {
+    if state
+        .unlocked
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+    {
+        return Err(err(VaultError::AlreadyExists));
+    }
+    let chosen = sync::user_path(&path);
+    let status = sync::classify_vault_candidate(&chosen).map_err(err)?;
+    if status.state == "ready" {
+        remember_vault_path(&app, PathBuf::from(&status.path))?;
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -822,6 +839,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             vault_exists,
+            discover_vaults,
+            open_existing_vault,
             create_vault,
             unlock,
             lock,

@@ -11,7 +11,7 @@ SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱�
 - macOS 앱: 화면이 잠기거나 잠자기에 들어가면 즉시 잠그는 옵션
 - 생체 인증: macOS는 Touch ID, 웹은 패스키(WebAuthn). 마스터 비밀번호는 항상 사용할 수 있습니다. 프로세스를 다시 시작한 직후와 N일마다(기본 14일, 1–365일) 마스터 비밀번호가 다시 필요합니다
 - 별도 비밀번호로 암호화된 내보내기 / 가져오기 (병합 또는 교체)
-- 기기 간 동기화: 금고 파일을 iCloud Drive 같은 폴더로 옮기고, 저장 전에 항목 단위로 병합합니다. 아래 "기기 간 동기화 (iCloud)"를 보세요
+- 기기 간 동기화: 금고 파일을 iCloud Drive 같은 폴더로 옮기고, 저장 전에 항목 단위로 병합합니다. 새 기기의 첫 화면에서 **기존 금고 열기**로 그 파일을 고를 수 있습니다. 아래 "기기 간 동기화 (iCloud)"를 보세요
 - 다크/라이트 테마
 
 ## 보안 구조
@@ -168,9 +168,11 @@ iPhone/iPad 팁:
 ### 준비
 1. 한 기기에서 금고를 연 뒤 설정 → 기기 간 동기화에서 경로를 지정합니다. 예: `~/Library/Mobile Documents/com~apple~CloudDocs/SecureVault/vault.khv`
 2. **이 경로로 옮기기**는 현재 금고 파일을 그 위치로 옮깁니다. 선택한 경로에는 암호문 파일만 있습니다.
-3. 다른 Mac의 SecureVault에서 **이 경로 열기**로 같은 파일을 지정합니다. iCloud가 파일을 아직 받지 못했으면 "iCloud에서 내려받는 중"으로 표시하고, macOS에서는 `brctl download`로 받기를 요청합니다. 다른 운영체제에서는 기다리기만 합니다.
-4. 웹 UI는 서버 파일 시스템을 고를 수 없으므로 절대 경로를 직접 입력합니다.
-5. 잠금 상태, 세션, MCP 토큰, 패스키(`webauthn.json`), Touch ID 키체인 항목은 각 기기의 앱 데이터 폴더에 남습니다. 기기마다 기기 id가 `keyhaven-config.json`에 저장되며 이 파일은 금고 안에 넣지 않습니다.
+3. 다른 기기에서 앱을 처음 열면 `keyhaven-config.json`에는 `deviceId`만 있고 `vaultPath`가 없습니다. 첫 화면의 **기존 금고 열기**로 같은 `.khv`를 고릅니다. 데스크톱은 파일 선택 창을 쓰고, `~/Library/Mobile Documents/com~apple~CloudDocs` 아래 `vault.khv`와 `*.khv`(`.이름.khv.icloud` 자리 표시자 포함)를 깊이 제한으로 찾아 추천합니다. 웹은 서버 홈 아래에서 같은 목록을 보여주고 경로를 입력합니다. 서버는 `127.0.0.1`에만 붙습니다.
+4. 고른 파일의 앞부분(매직 `KHV1`과 헤더, 또는 예전 JSON)이 금고가 아니면 "금고가 아님 / 손상 / 지원하지 않는 버전"으로 거절합니다. iCloud 자리 표시자면 macOS에서 `brctl download`로 받기를 요청하고, 화면은 실제 파일이 나올 때까지 기다립니다. 시간 안에 안 오면 안내를 보여 줍니다. 받은 뒤에만 `vaultPath`를 저장하고 `deviceId`는 그대로 둔 채 잠금 화면으로 갑니다.
+5. 금고가 보이는데 **금고 만들기**를 누르면, 비밀번호와 salt가 다른 별도 금고가 된다는 확인을 먼저 묻습니다.
+6. 이미 금고가 있는 기기에서는 설정 → 기기 간 동기화의 **이 경로 열기**로도 같은 파일을 지정합니다. 웹 UI는 서버 파일 시스템을 고를 수 없으므로 절대 경로를 직접 입력합니다.
+7. 잠금 상태, 세션, MCP 토큰, 패스키(`webauthn.json`), Touch ID 키체인 항목은 각 기기의 앱 데이터 폴더에 남습니다. 기기마다 기기 id가 `keyhaven-config.json`에 저장되며 이 파일은 금고 안에 넣지 않습니다.
 
 ### 병합
 - 금고에는 수정 횟수(revision)와 마지막으로 저장한 기기 id가 있습니다. 각 항목에는 id, `updated_at`, 기기별 버전 벡터가 있습니다.
@@ -198,7 +200,7 @@ iPhone/iPad 팁:
 `.github/workflows/build.yml`은 푸시와 수동 실행(workflow_dispatch)에서 돌아요.
 
 - **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `keyhaven-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
-- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `keyhaven-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.2.0_aarch64.dmg`입니다.
+- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `keyhaven-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.2.1_aarch64.dmg`입니다.
 
 ### 서명 켜는 법
 저장소 Settings → Secrets and variables → Actions에 `APPLE_CERTIFICATE`(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`(앱 전용 암호), `APPLE_TEAM_ID`를 넣으면 다음 실행부터 서명·공증 단계가 자동으로 켜져요.

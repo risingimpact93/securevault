@@ -17,6 +17,9 @@ use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const VAULT_VERSION: u32 = 1;
+/// On-disk prefix for files written by this version. Older files are raw JSON
+/// and still open. `KHV1` is the magic; the header is the JSON object after it.
+pub const VAULT_MAGIC: &[u8] = b"KHV1";
 pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 24;
 pub const KEY_LEN: usize = 32;
@@ -94,6 +97,15 @@ pub enum VaultError {
     WaitingForIcloud,
     #[error("path must be absolute")]
     AbsolutePathRequired,
+    /// The bytes are not a SecureVault file (wrong magic, or not a vault header).
+    #[error("not a vault")]
+    NotAVault,
+    /// The magic or header started, but the file is too short or incomplete.
+    #[error("corrupt")]
+    Corrupt,
+    /// Magic matched, but the header version or KDF is not one this build can open.
+    #[error("unsupported version")]
+    UnsupportedVersion,
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -860,11 +872,103 @@ pub fn create_empty_vault(
 }
 
 pub fn serialize_encrypted(file: &EncryptedVault) -> Result<Vec<u8>, VaultError> {
-    Ok(serde_json::to_vec(file)?)
+    let json = serde_json::to_vec(file)?;
+    let mut out = Vec::with_capacity(VAULT_MAGIC.len() + json.len());
+    out.extend_from_slice(VAULT_MAGIC);
+    out.extend_from_slice(&json);
+    Ok(out)
+}
+
+/// Read the vault magic and header. Does not decrypt.
+///
+/// `KHV1` plus a version-1 JSON header is valid. A pre-0.2.1 file that is only
+/// that JSON (no magic) is valid too. Anything else with a different prefix is
+/// not a vault. A short or cut-off header is corrupt. A newer `version` is
+/// unsupported.
+pub fn validate_vault_header(bytes: &[u8]) -> Result<u32, VaultError> {
+    let json = vault_json_slice(bytes)?;
+    header_version(json)
 }
 
 pub fn parse_encrypted(bytes: &[u8]) -> Result<EncryptedVault, VaultError> {
-    Ok(serde_json::from_slice(bytes)?)
+    let json = vault_json_slice(bytes)?;
+    let version = header_version(json)?;
+    let enc: EncryptedVault = serde_json::from_slice(json).map_err(|_| VaultError::Corrupt)?;
+    if enc.version != version {
+        return Err(VaultError::Corrupt);
+    }
+    Ok(enc)
+}
+
+fn vault_json_slice(bytes: &[u8]) -> Result<&[u8], VaultError> {
+    let bytes = strip_bom(bytes);
+    let bytes = trim_ascii_start(bytes);
+    if bytes.is_empty() {
+        return Err(VaultError::Corrupt);
+    }
+    if bytes.starts_with(VAULT_MAGIC) {
+        let rest = trim_ascii_start(&bytes[VAULT_MAGIC.len()..]);
+        if rest.is_empty() {
+            return Err(VaultError::Corrupt);
+        }
+        return Ok(rest);
+    }
+    if bytes.starts_with(b"{") {
+        return Ok(bytes);
+    }
+    // `KHV` is the start of the magic with the rest of the header missing.
+    if bytes.len() < VAULT_MAGIC.len() && VAULT_MAGIC.starts_with(bytes) {
+        return Err(VaultError::Corrupt);
+    }
+    Err(VaultError::NotAVault)
+}
+
+fn header_version(json: &[u8]) -> Result<u32, VaultError> {
+    if json.is_empty() {
+        return Err(VaultError::Corrupt);
+    }
+    let value: serde_json::Value = serde_json::from_slice(json).map_err(|_| VaultError::Corrupt)?;
+    let obj = value.as_object().ok_or(VaultError::NotAVault)?;
+    let version = obj
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .ok_or(VaultError::Corrupt)?;
+    if version == 0 || version > u64::from(VAULT_VERSION) {
+        return Err(VaultError::UnsupportedVersion);
+    }
+    let kdf = obj.get("kdf").and_then(|v| v.as_object()).ok_or(VaultError::Corrupt)?;
+    let algorithm = kdf
+        .get("algorithm")
+        .and_then(|v| v.as_str())
+        .ok_or(VaultError::Corrupt)?;
+    if algorithm != "argon2id" {
+        return Err(VaultError::UnsupportedVersion);
+    }
+    for key in ["m", "t", "p"] {
+        let number = kdf.get(key).and_then(|v| v.as_u64()).ok_or(VaultError::Corrupt)?;
+        if number == 0 || number > u64::from(u32::MAX) {
+            return Err(VaultError::Corrupt);
+        }
+    }
+    for key in ["salt", "nonce", "ciphertext"] {
+        let text = obj.get(key).and_then(|v| v.as_str()).ok_or(VaultError::Corrupt)?;
+        if text.is_empty() {
+            return Err(VaultError::Corrupt);
+        }
+    }
+    Ok(version as u32)
+}
+
+fn strip_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
+}
+
+fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    &bytes[start..]
 }
 
 pub fn export_bytes(data: &VaultData, export_password: &SecretString) -> Result<Vec<u8>, VaultError> {
@@ -1220,5 +1324,78 @@ mod tests {
             VaultError::Tampered
         ));
         assert!(wrap_vault_key(&key, &[1, 2, 3]).is_err());
+    }
+
+    fn sample_header_json(version: u32) -> Vec<u8> {
+        format!(
+            r#"{{"version":{version},"kdf":{{"algorithm":"argon2id","m":32,"t":1,"p":1}},"salt":"s","nonce":"n","ciphertext":"c"}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn header_validation_accepts_magic_and_legacy_json() {
+        let mut magic = VAULT_MAGIC.to_vec();
+        magic.extend_from_slice(&sample_header_json(1));
+        assert_eq!(validate_vault_header(&magic).unwrap(), 1);
+        assert!(matches!(parse_encrypted(&magic).unwrap().version, 1));
+
+        let legacy = sample_header_json(1);
+        assert!(!legacy.starts_with(VAULT_MAGIC));
+        assert_eq!(validate_vault_header(&legacy).unwrap(), 1);
+        assert_eq!(parse_encrypted(&legacy).unwrap().version, 1);
+
+        let password = secret("header-roundtrip");
+        let (_key, _salt, _params, enc, _data) = create_empty_vault(&password).unwrap();
+        let bytes = serialize_encrypted(&enc).unwrap();
+        assert!(bytes.starts_with(VAULT_MAGIC));
+        assert_eq!(validate_vault_header(&bytes).unwrap(), VAULT_VERSION);
+        assert_eq!(parse_encrypted(&bytes).unwrap(), enc);
+
+        let mut unsupported = VAULT_MAGIC.to_vec();
+        unsupported.extend_from_slice(&sample_header_json(99));
+        assert!(matches!(
+            validate_vault_header(&unsupported).unwrap_err(),
+            VaultError::UnsupportedVersion
+        ));
+    }
+
+    #[test]
+    fn header_validation_rejects_wrong_magic() {
+        let err = validate_vault_header(b"NOPE{\"version\":1}").unwrap_err();
+        assert!(matches!(err, VaultError::NotAVault));
+        assert_eq!(err.to_string(), "not a vault");
+        assert!(matches!(
+            validate_vault_header(b"ABCD").unwrap_err(),
+            VaultError::NotAVault
+        ));
+        assert!(matches!(
+            parse_encrypted(b"this is not a vault").unwrap_err(),
+            VaultError::NotAVault
+        ));
+    }
+
+    #[test]
+    fn header_validation_rejects_truncated() {
+        assert!(matches!(
+            validate_vault_header(b"KHV").unwrap_err(),
+            VaultError::Corrupt
+        ));
+        assert_eq!(validate_vault_header(b"KHV").unwrap_err().to_string(), "corrupt");
+        assert!(matches!(
+            validate_vault_header(b"KHV1").unwrap_err(),
+            VaultError::Corrupt
+        ));
+        let mut cut = VAULT_MAGIC.to_vec();
+        cut.extend_from_slice(br#"{"version":1,"kdf":"#);
+        assert!(matches!(
+            validate_vault_header(&cut).unwrap_err(),
+            VaultError::Corrupt
+        ));
+        assert!(matches!(
+            validate_vault_header(b"").unwrap_err(),
+            VaultError::Corrupt
+        ));
+        assert!(matches!(parse_encrypted(b"KHV").unwrap_err(), VaultError::Corrupt));
     }
 }

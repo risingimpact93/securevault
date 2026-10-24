@@ -1075,3 +1075,94 @@ async fn reregister_and_delete_invalidate_passkey() {
     assert_eq!(gone.status, 401);
     assert_eq!(gone.json()["error"], "biometrics unavailable");
 }
+
+#[test]
+fn open_existing_vault_keeps_device_and_rejects_bad_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("keyhaven-config.json"), br#"{"deviceId":"device-fixed"}"#).unwrap();
+    let vault = dir.path().join("vault.khv");
+    let mut bytes = vault::VAULT_MAGIC.to_vec();
+    bytes.extend_from_slice(
+        br#"{"version":1,"kdf":{"algorithm":"argon2id","m":32,"t":1,"p":1},"salt":"s","nonce":"n","ciphertext":"c"}"#,
+    );
+    std::fs::write(&vault, &bytes).unwrap();
+    let bad = dir.path().join("nope.khv");
+    std::fs::write(&bad, b"NOPE").unwrap();
+    let short = dir.path().join("short.khv");
+    std::fs::write(&short, b"KHV").unwrap();
+    let future = dir.path().join("future.khv");
+    let mut future_bytes = vault::VAULT_MAGIC.to_vec();
+    future_bytes.extend_from_slice(
+        br#"{"version":99,"kdf":{"algorithm":"argon2id","m":32,"t":1,"p":1},"salt":"s","nonce":"n","ciphertext":"c"}"#,
+    );
+    std::fs::write(&future, &future_bytes).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let (port, state) = serve_for_test(Config::test(data.clone())).await;
+        assert!(state.vault_path().starts_with(&data));
+        let listed = json_req(port, "GET", "/api/vaults/discover", None, None, None).await;
+        assert_eq!(listed.status, 200, "{}", String::from_utf8_lossy(&listed.body));
+        assert!(listed.json().is_array());
+
+        let opened = json_req(
+            port,
+            "POST",
+            "/api/vaults/open",
+            None,
+            None,
+            Some(&json!({ "path": vault.to_string_lossy() })),
+        )
+        .await;
+        assert_eq!(opened.status, 200, "{}", String::from_utf8_lossy(&opened.body));
+        assert_eq!(opened.json()["state"], "ready");
+        assert_eq!(state.vault_path(), vault);
+
+        let wrong = json_req(
+            port,
+            "POST",
+            "/api/vaults/open",
+            None,
+            None,
+            Some(&json!({ "path": bad.to_string_lossy() })),
+        )
+        .await;
+        assert_eq!(wrong.status, 400);
+        assert_eq!(wrong.json()["error"], "not a vault");
+
+        let truncated = json_req(
+            port,
+            "POST",
+            "/api/vaults/open",
+            None,
+            None,
+            Some(&json!({ "path": short.to_string_lossy() })),
+        )
+        .await;
+        assert_eq!(truncated.status, 400);
+        assert_eq!(truncated.json()["error"], "corrupt");
+
+        let unsupported = json_req(
+            port,
+            "POST",
+            "/api/vaults/open",
+            None,
+            None,
+            Some(&json!({ "path": future.to_string_lossy() })),
+        )
+        .await;
+        assert_eq!(unsupported.status, 400);
+        assert_eq!(unsupported.json()["error"], "unsupported version");
+
+        let body = serde_json::to_vec(&json!({ "path": vault.to_string_lossy() })).unwrap();
+        let no_origin = exchange(port, "POST", "/api/vaults/open", false, None, None, &[], &body).await;
+        assert_eq!(no_origin.status, 403);
+    });
+
+    let raw = std::fs::read_to_string(data.join("keyhaven-config.json")).unwrap();
+    let parsed: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["deviceId"], "device-fixed");
+    assert!(parsed["vaultPath"].as_str().unwrap().ends_with("vault.khv"));
+}

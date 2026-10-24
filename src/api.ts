@@ -14,6 +14,8 @@ import type {
   SettingsPatch,
   SyncStatus,
   AppBuild,
+  DiscoveredVault,
+  OpenVaultStatus,
   VaultItem,
   VaultLocationMode,
   VaultSettings,
@@ -33,6 +35,9 @@ export function mapError(message: string): string {
     "vault already exists": "금고가 이미 있습니다.",
     "vault not found": "금고를 찾을 수 없습니다.",
     "ciphertext or header was tampered with": "금고 파일이 손상되었거나 변조되었습니다.",
+    "not a vault": "이 파일은 금고 파일이 아닙니다.",
+    corrupt: "금고 파일이 잘렸거나 손상되었습니다.",
+    "unsupported version": "이 앱이 지원하지 않는 금고 버전입니다.",
     "invalid item type": "알 수 없는 항목 종류입니다.",
     "item not found": "항목을 찾을 수 없습니다.",
     "mode must be merge or replace": "가져오기 방식이 올바르지 않습니다.",
@@ -302,6 +307,19 @@ export async function vaultExists(): Promise<boolean> {
   return http<boolean>("/api/vault-exists");
 }
 
+export async function discoverVaults(): Promise<DiscoveredVault[]> {
+  if (isTauri()) return invoke<DiscoveredVault[]>("discover_vaults");
+  return http<DiscoveredVault[]>("/api/vaults/discover");
+}
+
+export async function openExistingVault(path: string): Promise<OpenVaultStatus> {
+  if (isTauri()) return invoke<OpenVaultStatus>("open_existing_vault", { path });
+  return http<OpenVaultStatus>("/api/vaults/open", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
 export async function createVault(password: string): Promise<void> {
   if (isTauri()) {
     await invoke("create_vault", { password });
@@ -555,7 +573,10 @@ export async function pickVaultFile(mode: VaultLocationMode): Promise<string | n
   const selected = await open({
     title: "기존 금고 열기",
     multiple: false,
-    filters: [{ name: "SecureVault", extensions: ["khv"] }],
+    filters: [
+      { name: "SecureVault", extensions: ["khv"] },
+      { name: "iCloud placeholder", extensions: ["icloud"] },
+    ],
   });
   if (Array.isArray(selected)) return selected[0] ?? null;
   return selected;

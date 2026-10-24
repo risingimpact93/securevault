@@ -97,6 +97,7 @@ a {
   display: grid;
   place-items: center;
   padding: 32px 20px;
+  overflow: auto;
 }
 
 .auth-card {
@@ -787,6 +788,43 @@ h3 {
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+.discover-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.discover-item {
+  text-align: left;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+}
+
+.discover-item strong {
+  font-weight: 650;
+}
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--faint);
+  font-size: 12px;
+  margin: 4px 0 16px;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
 }
 
 .actions {

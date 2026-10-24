@@ -357,7 +357,9 @@ export default function App() {
   return (
     <>
       {screen === "loading" ? <div className="auth-wrap">불러오는 중…</div> : null}
-      {screen === "setup" ? <SetupScreen onCreate={handleCreate} /> : null}
+      {screen === "setup" ? (
+        <SetupScreen onCreate={handleCreate} onOpened={() => setScreen("unlock")} />
+      ) : null}
       {screen === "unlock" ? <UnlockScreen onUnlock={handleUnlock} onBiometric={handleBiometric} /> : null}
       {screen === "main" ? (
         <MainScreen

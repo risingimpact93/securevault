@@ -5,7 +5,7 @@
 //! A save re-reads the file and merges when the nonce, revision, or ciphertext hash changed.
 //! After that save, merged conflict files move to the local `sync-backups` directory.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,10 @@ pub const LEGACY_DEVICE: &str = "legacy";
 pub const LEGACY_TIMESTAMP: &str = "1970-01-01T00:00:00Z";
 pub const SYNC_BACKUP_KEEP: usize = 10;
 pub const SYNC_BACKUP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Directory depth under the scan root. `0` is the root itself.
+pub const DISCOVERY_MAX_DEPTH: usize = 4;
+/// Directory entries visited before a scan stops.
+pub const DISCOVERY_MAX_ENTRIES: usize = 4_000;
 
 #[derive(Clone, Debug)]
 pub struct FileStamp {
@@ -161,6 +165,23 @@ pub fn save_local_config(data_dir: &Path, config: &LocalConfig) -> Result<(), Va
     write_local_config_file(&local_config_path(data_dir), &file)
 }
 
+/// Store `vault_path` without minting a new device id.
+/// An empty `device_id` is filled from the config file already on disk.
+pub fn save_vault_path(data_dir: &Path, device_id: &str, vault_path: &Path) -> Result<LocalConfig, VaultError> {
+    require_absolute(vault_path)?;
+    let device_id = if device_id.trim().is_empty() {
+        load_or_create_local_config(data_dir)?.device_id
+    } else {
+        device_id.to_string()
+    };
+    let config = LocalConfig {
+        device_id,
+        vault_path: Some(normalize_path(vault_path)),
+    };
+    save_local_config(data_dir, &config)?;
+    Ok(config)
+}
+
 fn write_local_config_file(path: &Path, file: &LocalConfigFile) -> Result<(), VaultError> {
     let bytes = serde_json::to_vec_pretty(file)?;
     let tmp = path.with_extension("json.tmp");
@@ -261,6 +282,266 @@ fn request_icloud_download(path: &Path) {
 #[cfg(not(target_os = "macos"))]
 fn request_icloud_download(path: &Path) {
     let _ = path;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredVault {
+    pub path: String,
+    pub name: String,
+    pub placeholder: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenVaultStatus {
+    /// `ready` or `waiting_icloud`.
+    pub state: String,
+    pub path: String,
+    pub message: String,
+    pub placeholder: bool,
+}
+
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+pub fn icloud_drive_dir() -> Option<PathBuf> {
+    Some(
+        home_dir()?
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs"),
+    )
+}
+
+/// `.vault.khv.icloud` → `vault.khv`. Other iCloud placeholders are ignored.
+pub fn vault_file_name_from_placeholder(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix('.')?.strip_suffix(".icloud")?;
+    if rest.is_empty() || rest.contains('/') || rest.contains('\\') {
+        return None;
+    }
+    if !is_khv_name(rest) {
+        return None;
+    }
+    Some(rest)
+}
+
+pub fn is_icloud_placeholder_name(name: &str) -> bool {
+    vault_file_name_from_placeholder(name).is_some()
+}
+
+/// Map a picked placeholder (`.name.khv.icloud`) back to the real vault path.
+pub fn canonical_vault_choice(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    match vault_file_name_from_placeholder(name) {
+        Some(real) => path.with_file_name(real),
+        None => path.to_path_buf(),
+    }
+}
+
+pub fn discover_icloud_vaults() -> Vec<DiscoveredVault> {
+    let Some(root) = icloud_drive_dir() else {
+        return Vec::new();
+    };
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    discover_vaults(&root, DISCOVERY_MAX_DEPTH, DISCOVERY_MAX_ENTRIES)
+}
+
+/// Vaults under `home`, including iCloud Drive.
+///
+/// `Library` is not walked from the home root. That tree is large, and the
+/// iCloud folder under it is scanned on its own so the entry limit still
+/// reaches `vault.khv`.
+pub fn discover_home_vaults_at(home: &Path) -> Vec<DiscoveredVault> {
+    if !home.is_dir() {
+        return Vec::new();
+    }
+    let mut merged = BTreeMap::new();
+    let icloud = home
+        .join("Library")
+        .join("Mobile Documents")
+        .join("com~apple~CloudDocs");
+    if icloud.is_dir() {
+        for vault in discover_vaults(&icloud, DISCOVERY_MAX_DEPTH, DISCOVERY_MAX_ENTRIES) {
+            insert_discovered(&mut merged, vault);
+        }
+    }
+    for vault in discover_vaults_filtered(home, DISCOVERY_MAX_DEPTH, DISCOVERY_MAX_ENTRIES, skip_home_dir) {
+        insert_discovered(&mut merged, vault);
+    }
+    merged.into_values().collect()
+}
+
+pub fn discover_home_vaults() -> Vec<DiscoveredVault> {
+    home_dir()
+        .map(|home| discover_home_vaults_at(&home))
+        .unwrap_or_default()
+}
+
+pub fn discover_vaults(root: &Path, max_depth: usize, max_entries: usize) -> Vec<DiscoveredVault> {
+    discover_vaults_filtered(root, max_depth, max_entries, |_| false)
+}
+
+fn discover_vaults_filtered(
+    root: &Path,
+    max_depth: usize,
+    max_entries: usize,
+    skip_dir: impl Fn(&str) -> bool,
+) -> Vec<DiscoveredVault> {
+    if max_entries == 0 || !root.is_dir() {
+        return Vec::new();
+    }
+    let mut found = BTreeMap::new();
+    let mut entries_seen = 0usize;
+    let mut queue = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0usize));
+    while let Some((dir, depth)) = queue.pop_front() {
+        if entries_seen >= max_entries {
+            break;
+        }
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read {
+            if entries_seen >= max_entries {
+                break;
+            }
+            entries_seen += 1;
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if depth < max_depth {
+                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                        if !skip_dir(name) {
+                            queue.push_back((path, depth + 1));
+                        }
+                    }
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if let Some(real_name) = vault_file_name_from_placeholder(name) {
+                let real = path.with_file_name(real_name);
+                insert_discovered(
+                    &mut found,
+                    DiscoveredVault {
+                        name: real_name.to_string(),
+                        path: real.to_string_lossy().into_owned(),
+                        placeholder: true,
+                    },
+                );
+                continue;
+            }
+            if is_khv_name(name) {
+                insert_discovered(
+                    &mut found,
+                    DiscoveredVault {
+                        name: name.to_string(),
+                        path: path.to_string_lossy().into_owned(),
+                        placeholder: false,
+                    },
+                );
+            }
+        }
+    }
+    found.into_values().collect()
+}
+
+fn skip_home_dir(name: &str) -> bool {
+    name.starts_with('.')
+        || matches!(name, "Library" | "node_modules" | "target" | "dist" | "Applications")
+}
+
+fn insert_discovered(found: &mut BTreeMap<String, DiscoveredVault>, vault: DiscoveredVault) {
+    match found.get_mut(&vault.path) {
+        Some(existing) => {
+            if !vault.placeholder {
+                existing.placeholder = false;
+            }
+        }
+        None => {
+            found.insert(vault.path.clone(), vault);
+        }
+    }
+}
+
+fn is_khv_name(name: &str) -> bool {
+    if name.starts_with('.') || name.ends_with(".tmp") || is_merged_backup_name(name) {
+        return false;
+    }
+    name.to_ascii_lowercase().ends_with(".khv")
+}
+
+/// Check a chosen path. A real `.khv` must have a valid header. A missing file
+/// whose sibling is `.<name>.icloud` asks macOS to download and reports waiting.
+pub fn classify_vault_candidate(path: &Path) -> Result<OpenVaultStatus, VaultError> {
+    let real = canonical_vault_choice(path);
+    require_absolute(&real)?;
+    let placeholder_path = icloud_placeholder(&real);
+    let placeholder_exists = placeholder_path.as_ref().is_some_and(|candidate| candidate.exists());
+    let chosen_placeholder = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_icloud_placeholder_name)
+        && path.exists();
+    if real.is_file() {
+        let bytes = fs::read(&real)?;
+        match vault::validate_vault_header(&bytes) {
+            Ok(_) => {
+                let stored = normalize_path(&real);
+                return Ok(OpenVaultStatus {
+                    state: "ready".to_string(),
+                    path: stored.to_string_lossy().into_owned(),
+                    message: String::new(),
+                    placeholder: false,
+                });
+            }
+            // A sibling `.icloud` file means the bytes on disk are not the vault yet.
+            Err(_) if placeholder_exists || chosen_placeholder => {
+                return Ok(waiting_status(&real));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if real.exists() {
+        return Err(VaultError::NotAVault);
+    }
+    if placeholder_exists || chosen_placeholder {
+        return Ok(waiting_status(&real));
+    }
+    Err(VaultError::NotFound)
+}
+
+fn waiting_status(real: &Path) -> OpenVaultStatus {
+    prompt_icloud_download(real);
+    let stored = normalize_path(real);
+    OpenVaultStatus {
+        state: "waiting_icloud".to_string(),
+        path: stored.to_string_lossy().into_owned(),
+        message: VaultError::WaitingForIcloud.to_string(),
+        placeholder: true,
+    }
 }
 
 pub fn conflict_siblings(vault_path: &Path) -> Vec<PathBuf> {
@@ -2609,5 +2890,147 @@ mod tests {
         assert!(updated.order_versions.get("device-b").is_none());
         assert_eq!(updated.versions.get("device-b"), Some(&1));
         assert_eq!(updated.versions.get(LEGACY_DEVICE), None);
+    }
+
+    fn sample_header() -> Vec<u8> {
+        let mut bytes = vault::VAULT_MAGIC.to_vec();
+        bytes.extend_from_slice(
+            br#"{"version":1,"kdf":{"algorithm":"argon2id","m":32,"t":1,"p":1},"salt":"s","nonce":"n","ciphertext":"c"}"#,
+        );
+        bytes
+    }
+
+    #[test]
+    fn placeholder_name_maps_both_ways() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault.khv");
+        let placeholder = icloud_placeholder(&vault).unwrap();
+        assert_eq!(placeholder.file_name().unwrap(), ".vault.khv.icloud");
+        assert_eq!(canonical_vault_choice(&placeholder), vault);
+        assert_eq!(canonical_vault_choice(&vault), vault);
+        let spaced = dir.path().join("My Vault.khv");
+        assert_eq!(
+            icloud_placeholder(&spaced).unwrap().file_name().unwrap(),
+            ".My Vault.khv.icloud"
+        );
+        assert_eq!(
+            vault_file_name_from_placeholder(".My Vault.khv.icloud"),
+            Some("My Vault.khv")
+        );
+        assert_eq!(vault_file_name_from_placeholder("vault.khv"), None);
+        assert_eq!(vault_file_name_from_placeholder(".notes.txt.icloud"), None);
+        assert!(is_icloud_placeholder_name(".vault.khv.icloud"));
+        assert!(!is_icloud_placeholder_name("vault.khv"));
+
+        fs::write(&placeholder, b"not-yet").unwrap();
+        let waiting = classify_vault_candidate(&vault).unwrap();
+        assert_eq!(waiting.state, "waiting_icloud");
+        assert!(waiting.placeholder);
+        assert!(waiting.path.ends_with("vault.khv"));
+        let from_placeholder = classify_vault_candidate(&placeholder).unwrap();
+        assert_eq!(from_placeholder.state, "waiting_icloud");
+        assert_eq!(from_placeholder.path, waiting.path);
+    }
+
+    #[test]
+    fn saving_vault_path_keeps_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(local_config_path(&data), br#"{"deviceId":"device-fixed"}"#).unwrap();
+        let loaded = load_or_create_local_config(&data).unwrap();
+        assert_eq!(loaded.device_id, "device-fixed");
+        assert!(loaded.vault_path.is_none());
+
+        let vault = dir.path().join("Cloud").join("vault.khv");
+        fs::create_dir_all(vault.parent().unwrap()).unwrap();
+        fs::write(&vault, sample_header()).unwrap();
+        let status = classify_vault_candidate(&vault).unwrap();
+        assert_eq!(status.state, "ready");
+        assert!(!status.placeholder);
+        let saved = save_vault_path(&data, &loaded.device_id, Path::new(&status.path)).unwrap();
+        assert_eq!(saved.device_id, "device-fixed");
+        let again = load_or_create_local_config(&data).unwrap();
+        assert_eq!(again.device_id, "device-fixed");
+        assert_eq!(again.vault_path.as_deref(), Some(Path::new(&status.path)));
+        let raw = fs::read_to_string(local_config_path(&data)).unwrap();
+        assert!(raw.contains("device-fixed"));
+        assert!(raw.contains("vault.khv"));
+    }
+
+    #[test]
+    fn discovery_respects_depth_and_entry_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("here.khv"), b"x").unwrap();
+        let mid = root.join("a").join("b").join("c").join("d");
+        fs::create_dir_all(&mid).unwrap();
+        fs::write(mid.join("at-limit.khv"), b"x").unwrap();
+        let deep = mid.join("e");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("too-deep.khv"), b"x").unwrap();
+        fs::write(root.join("skip.txt"), b"no").unwrap();
+        fs::write(root.join(".secret.khv.icloud"), b"ph").unwrap();
+        fs::write(root.join("notes.khv.tmp"), b"tmp").unwrap();
+
+        let found = discover_vaults(root, 4, 100);
+        let names: BTreeSet<_> = found.iter().map(|vault| vault.name.clone()).collect();
+        assert!(names.contains("here.khv"), "{names:?}");
+        assert!(names.contains("at-limit.khv"), "{names:?}");
+        assert!(names.contains("secret.khv"), "{names:?}");
+        assert!(!names.contains("too-deep.khv"), "{names:?}");
+        assert!(!names.contains("notes.khv.tmp"), "{names:?}");
+        let placeholder = found.iter().find(|vault| vault.name == "secret.khv").unwrap();
+        assert!(placeholder.placeholder);
+        assert!(placeholder.path.ends_with("secret.khv"));
+
+        let shallower = discover_vaults(root, 3, 100);
+        assert!(shallower.iter().all(|vault| vault.name != "at-limit.khv"));
+        assert!(shallower.iter().all(|vault| vault.name != "too-deep.khv"));
+        assert!(shallower.iter().any(|vault| vault.name == "here.khv"));
+
+        fs::write(root.join("secret.khv"), b"real").unwrap();
+        let both = discover_vaults(root, 4, 100);
+        let secret = both.iter().find(|vault| vault.name == "secret.khv").unwrap();
+        assert!(!secret.placeholder);
+
+        let many = root.join("many");
+        fs::create_dir_all(&many).unwrap();
+        for index in 0..10 {
+            fs::write(many.join(format!("v{index}.khv")), b"x").unwrap();
+        }
+        let limited = discover_vaults(&many, 4, 3);
+        assert_eq!(limited.len(), 3, "{limited:?}");
+    }
+
+    #[test]
+    fn home_discovery_finds_icloud_and_skips_library_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let icloud = home
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs")
+            .join("SecureVault");
+        fs::create_dir_all(&icloud).unwrap();
+        fs::write(icloud.join("vault.khv"), b"vault").unwrap();
+        fs::write(icloud.join(".other.khv.icloud"), b"ph").unwrap();
+        let cache = home.join("Library").join("Caches");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("noise.khv"), b"no").unwrap();
+        fs::create_dir_all(home.join("Documents")).unwrap();
+        fs::write(home.join("Documents").join("mine.khv"), b"mine").unwrap();
+        let modules = home.join("node_modules").join("pkg");
+        fs::create_dir_all(&modules).unwrap();
+        fs::write(modules.join("skip.khv"), b"skip").unwrap();
+
+        let found = discover_home_vaults_at(home);
+        let names: BTreeSet<_> = found.iter().map(|vault| vault.name.clone()).collect();
+        assert!(names.contains("vault.khv"), "{names:?}");
+        assert!(names.contains("other.khv"), "{names:?}");
+        assert!(names.contains("mine.khv"), "{names:?}");
+        assert!(!names.contains("noise.khv"), "{names:?}");
+        assert!(!names.contains("skip.khv"), "{names:?}");
+        assert!(found.iter().find(|vault| vault.name == "other.khv").unwrap().placeholder);
     }
 }

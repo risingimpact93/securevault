@@ -112,6 +112,19 @@ export interface SettingsPatch {
   passwordIntervalDays?: number;
 }
 
+export interface DiscoveredVault {
+  path: string;
+  name: string;
+  placeholder: boolean;
+}
+
+export interface OpenVaultStatus {
+  state: "ready" | "waiting_icloud" | string;
+  path: string;
+  message: string;
+  placeholder: boolean;
+}
+
 export type SyncState = "ok" | "waiting_icloud" | "password_required" | "error";
 
 export interface SyncStatus {

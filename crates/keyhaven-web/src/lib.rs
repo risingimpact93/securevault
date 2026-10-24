@@ -199,14 +199,9 @@ impl AppState {
     }
 
     fn remember_vault_path(&self, path: PathBuf) -> Result<(), VaultError> {
-        sync::save_local_config(
-            &self.inner.data_dir,
-            &sync::LocalConfig {
-                device_id: self.inner.device_id.clone(),
-                vault_path: Some(path.clone()),
-            },
-        )?;
-        *self.inner.vault_path.lock().expect("vault path") = path;
+        let saved = sync::save_vault_path(&self.inner.data_dir, &self.inner.device_id, &path)?;
+        let stored = saved.vault_path.unwrap_or(path);
+        *self.inner.vault_path.lock().expect("vault path") = stored;
         Ok(())
     }
 
@@ -309,6 +304,24 @@ impl AppState {
     pub fn vault_exists(&self) -> bool {
         let path = self.vault_path();
         path.exists() || sync::icloud_placeholder(&path).is_some_and(|placeholder| placeholder.exists())
+    }
+
+    pub fn discover_vaults(&self) -> Vec<sync::DiscoveredVault> {
+        sync::discover_home_vaults()
+    }
+
+    /// Point this install at an existing vault file. The device id stays as it is.
+    /// A header check runs before the path is saved. iCloud placeholders wait.
+    pub fn open_existing_vault(&self, raw_path: &str) -> Result<sync::OpenVaultStatus, VaultError> {
+        if self.is_unlocked() {
+            return Err(VaultError::AlreadyExists);
+        }
+        let chosen = sync::user_path(raw_path);
+        let status = sync::classify_vault_candidate(&chosen)?;
+        if status.state == "ready" {
+            self.remember_vault_path(PathBuf::from(&status.path))?;
+        }
+        Ok(status)
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -892,7 +905,10 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         VaultError::AlreadyExists
         | VaultError::SyncPasswordRequired
         | VaultError::WaitingForIcloud => StatusCode::CONFLICT,
-        VaultError::AbsolutePathRequired => StatusCode::BAD_REQUEST,
+        VaultError::AbsolutePathRequired
+        | VaultError::NotAVault
+        | VaultError::Corrupt
+        | VaultError::UnsupportedVersion => StatusCode::BAD_REQUEST,
         VaultError::InvalidItemType
         | VaultError::GeneratorLength
         | VaultError::GeneratorCharset
