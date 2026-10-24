@@ -15,7 +15,7 @@ fn main() {
         }
     }
     let hash = resolve_hash();
-    println!("cargo:rustc-env=KEYHAVEN_GIT_HASH={hash}");
+    println!("cargo:rustc-env=SECUREVAULT_GIT_HASH={hash}");
 }
 
 fn resolve_hash() -> String {

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine as _;
-use keyhaven_core::vault::{self, VaultError, WrappedVaultKey};
+use securevault_core::vault::{self, VaultError, WrappedVaultKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -64,6 +64,7 @@ pub(crate) struct BiometricStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub platform: &'static str,
+    pub touch_id_reregister: bool,
 }
 
 impl AppState {
@@ -82,6 +83,7 @@ impl AppState {
             password_required,
             reason,
             platform: "web",
+            touch_id_reregister: false,
         }
     }
 
@@ -95,8 +97,10 @@ impl AppState {
             .as_ref()
             .map(|cred| vec![cred.passkey.cred_id().clone()]);
         let (webauthn, _origin) = self.webauthn()?;
+        // The RP ID stays `localhost` (see `webauthn()`), so existing passkeys
+        // tied to that origin keep working. The account name is display-only.
         let (ccr, state) = webauthn
-            .start_passkey_registration(store.user_id, "keyhaven", "SecureVault", exclude)
+            .start_passkey_registration(store.user_id, "securevault", "SecureVault", exclude)
             .map_err(|e| e.to_string())?;
         let mut salt = vec![0u8; vault::KEY_LEN];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);

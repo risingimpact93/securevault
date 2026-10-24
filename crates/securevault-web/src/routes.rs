@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::stream::StreamExt;
-use keyhaven_core::vault::{self, SettingsPatch, VaultItem};
+use securevault_core::vault::{self, SettingsPatch, VaultItem};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
@@ -265,7 +265,7 @@ async fn unlock(
             session_ok(&state, StatusCode::OK)
         }
         Err(err) => {
-            if matches!(err, keyhaven_core::vault::VaultError::WrongPassword) {
+            if matches!(err, securevault_core::vault::VaultError::WrongPassword) {
                 let wait = state.record_login_failure(&ip);
                 let mut resp = vault_error(err);
                 resp.headers_mut().insert(
@@ -303,8 +303,8 @@ async fn is_unlocked(State(state): State<AppState>, headers: HeaderMap) -> impl 
 
 async fn about() -> impl IntoResponse {
     Json(json!({
-        "version": keyhaven_core::VERSION,
-        "commit": keyhaven_core::GIT_COMMIT,
+        "version": securevault_core::VERSION,
+        "commit": securevault_core::GIT_COMMIT,
     }))
 }
 

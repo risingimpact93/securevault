@@ -26,13 +26,14 @@ import { DEFAULT_VAULT_SETTINGS } from "./types";
 type Screen = "loading" | "setup" | "unlock" | "main";
 type Theme = "dark" | "light";
 
-const THEME_KEY = "keyhaven.theme";
+const THEME_KEY = "securevault.theme";
+const LEGACY_THEME_KEY = "keyhaven.theme";
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("loading");
   const [items, setItems] = useState<VaultItem[]>([]);
   const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem(THEME_KEY);
+    const saved = localStorage.getItem(THEME_KEY) ?? localStorage.getItem(LEGACY_THEME_KEY);
     return saved === "light" ? "light" : "dark";
   });
   const [settings, setSettings] = useState<VaultSettings>(DEFAULT_VAULT_SETTINGS);

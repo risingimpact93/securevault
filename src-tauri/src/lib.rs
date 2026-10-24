@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use keyhaven_core::sync::{self, ConflictView, SyncStatus};
-use keyhaven_core::vault::{
+use securevault_core::sync::{self, ConflictView, SyncStatus};
+use securevault_core::vault::{
     self, generate_password as vault_generate_password, import_bytes, mark_password_unlock, new_id,
     now_rfc3339, password_unlock_expired_now, persist_unlocked, unlock_file_with_key, validate_item_type,
     SettingsPatch, UnlockedVault, VaultError, VaultItem, VaultKey, VaultSettings,
@@ -109,9 +109,10 @@ struct BiometricStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     platform: &'static str,
+    touch_id_reregister: bool,
 }
 
-fn biometric_view(state: &AppState) -> BiometricStatus {
+fn biometric_view(state: &AppState, touch_id_reregister: bool) -> BiometricStatus {
     let settings = state
         .settings
         .lock()
@@ -136,6 +137,7 @@ fn biometric_view(state: &AppState) -> BiometricStatus {
         password_required,
         reason,
         platform: if available { "macos" } else { "unsupported" },
+        touch_id_reregister,
     }
 }
 
@@ -152,6 +154,7 @@ fn ensure_local(app: &AppHandle) -> Result<LocalState, String> {
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    securevault_core::migrate::migrate_sibling_data_dir(&dir).map_err(err)?;
     let config = sync::load_or_create_local_config(&dir).map_err(err)?;
     let local = LocalState {
         device_id: config.device_id,
@@ -320,8 +323,8 @@ struct AppBuild {
 #[tauri::command]
 fn app_build() -> AppBuild {
     AppBuild {
-        version: keyhaven_core::VERSION.to_string(),
-        commit: keyhaven_core::GIT_COMMIT.to_string(),
+        version: securevault_core::VERSION.to_string(),
+        commit: securevault_core::GIT_COMMIT.to_string(),
     }
 }
 
@@ -502,8 +505,15 @@ fn screen_lock_supported() -> bool {
 }
 
 #[tauri::command]
-fn biometric_status(state: State<AppState>) -> BiometricStatus {
-    biometric_view(&state)
+async fn biometric_status(app: AppHandle) -> Result<BiometricStatus, String> {
+    let local = ensure_local(&app)?;
+    let dir = local.data_dir.clone();
+    tokio::task::spawn_blocking(move || platform::migrate_touch_id_keychain(&dir))
+        .await
+        .map_err(|err| err.to_string())?;
+    let flag = securevault_core::migrate::touch_id_reregister_pending(&local.data_dir);
+    let state = app.state::<AppState>();
+    Ok(biometric_view(&state, flag))
 }
 
 #[tauri::command]
@@ -534,7 +544,10 @@ async fn biometric_enable(app: AppHandle) -> Result<BiometricStatus, String> {
     unlocked.dirty = true;
     persist(&app, &path, unlocked)?;
     remember_settings(&state, &unlocked.data.settings);
-    Ok(biometric_view(&state))
+    if let Ok(local) = ensure_local(&app) {
+        securevault_core::migrate::clear_touch_id_reregister(&local.data_dir);
+    }
+    Ok(biometric_view(&state, false))
 }
 
 #[tauri::command]
@@ -551,7 +564,10 @@ fn biometric_disable(app: AppHandle, state: State<AppState>) -> Result<Biometric
     unlocked.dirty = true;
     persist(&app, &path, unlocked)?;
     remember_settings(&state, &unlocked.data.settings);
-    Ok(biometric_view(&state))
+    let flag = ensure_local(&app)
+        .map(|local| securevault_core::migrate::touch_id_reregister_pending(&local.data_dir))
+        .unwrap_or(false);
+    Ok(biometric_view(&state, flag))
 }
 
 #[tauri::command]
@@ -876,6 +892,12 @@ pub fn run() {
             mcp_host::respond_mcp_approval,
         ])
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                if let Err(err) = securevault_core::migrate::migrate_sibling_data_dir(&dir) {
+                    eprintln!("securevault migration: {err}");
+                }
+            }
             platform::start_screen_lock_watcher(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -883,7 +905,7 @@ pub fn run() {
                 poll_desktop(&handle);
             });
             if let Err(err) = mcp_host::install(app.handle()) {
-                eprintln!("keyhaven mcp: {err}");
+                eprintln!("securevault mcp: {err}");
             }
             Ok(())
         })

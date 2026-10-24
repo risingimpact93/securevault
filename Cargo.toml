@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "crates/keyhaven-core", "crates/keyhaven-web"]
+members = ["src-tauri", "crates/securevault-core", "crates/securevault-web"]
 resolver = "2"
 
 [workspace.package]

@@ -1,6 +1,6 @@
 # SecureVault — 로컬 비밀번호 관리자
 
-SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱입니다 (Tauri 2 데스크톱 + Axum 웹 + React + Rust). 번들 식별자는 `com.keyhaven.app`이고, 금고 파일 이름과 앱 데이터 경로는 그대로입니다.
+SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱입니다 (Tauri 2 데스크톱 + Axum 웹 + React + Rust). 번들 식별자는 `com.securevault.app`입니다. 금고 파일은 `.khv`이고, 디스크 형식은 이전 버전과 같습니다. 앱 데이터 폴더를 옮긴 첫 실행은 아래 "이름 변경"을 보세요.
 
 ## 기능
 - 마스터 비밀번호로 금고 생성 / 잠금 해제 / 잠금, 마스터 비밀번호 변경
@@ -17,7 +17,7 @@ SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱�
 ## 보안 구조
 - 키 유도: Argon2id (64 MiB, 반복 3, 병렬 1, 무작위 16바이트 salt)
 - 암호화: XChaCha20-Poly1305 (무작위 24바이트 nonce), 파일 헤더를 AAD로 묶어 변조 시 열리지 않음
-- 기본 저장 위치: `~/Library/Application Support/com.keyhaven.app/vault.khv` (임시 파일 후 교체 방식으로 안전 저장). 설정에서 다른 절대 경로로 옮기거나 기존 파일을 열 수 있습니다. 그 경로에는 암호화된 파일만 두고, 잠금·세션·토큰·패스키·Touch ID 자료는 앱 데이터 폴더에 남습니다. 생체 인증 켜기/끄기는 금고 안에 있어 파일과 함께 동기화되지만, 키체인과 패스키 재료는 옮겨지지 않습니다
+- 기본 저장 위치: `~/Library/Application Support/com.securevault.app/vault.khv` (임시 파일 후 교체 방식으로 안전 저장). 설정에서 다른 절대 경로로 옮기거나 기존 파일을 열 수 있습니다. 그 경로에는 암호화된 파일만 두고, 잠금·세션·토큰·패스키·Touch ID 자료는 앱 데이터 폴더에 남습니다. 생체 인증 켜기/끄기는 금고 안에 있어 파일과 함께 동기화되지만, 키체인과 패스키 재료는 옮겨지지 않습니다
 - 암호화 키는 메모리에서 zeroize/secrecy로 관리하고, 잠그면 지웁니다
 - 자동 잠금·화면 잠금·생체 인증 사용 여부·비밀번호 재확인 주기는 암호문 안의 `settings`에 있습니다. 예전 금고 파일에 이 필드가 없으면 기본값(1분, 생체 인증 끔, 14일)으로 열립니다
 - 웹 패스키의 공개 자격 증명과 PRF로 감싼 금고 키는 암호문 밖 `webauthn.json`에 있습니다. PRF를 지원하지 않는 인증기는 서버 메모리에 키가 남아 있을 때만 세션을 다시 엽니다
@@ -44,7 +44,7 @@ SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱�
 
 Touch ID와 키체인은 서명된 앱에서만 안정적으로 동작합니다. `tauri.conf.json`의 `bundle.macOS`는 최소 macOS 10.15, 강화된 런타임(`hardenedRuntime: true`), 자격 파일, `Info.plist`를 가리킵니다. `signingIdentity`는 비어 있습니다. 배포할 때 Apple Developer ID(또는 팀에 고정된 서명 신원)를 넣으세요. 임시 서명(`codesign --sign -`)은 빌드마다 신원이 바뀌어 키체인 항목이 바로 무효가 됩니다.
 
-- 자격(`src-tauri/entitlements.plist`): `keychain-access-groups` = `$(AppIdentifierPrefix)com.keyhaven.app`. 접근 그룹을 직접 지정할 때만 환경 변수 `KEYHAVEN_KEYCHAIN_ACCESS_GROUP`을 같은 값으로 설정합니다. 비워 두면 그룹을 묻지 않습니다.
+- 자격(`src-tauri/entitlements.plist`): `keychain-access-groups` = `$(AppIdentifierPrefix)com.securevault.app`. 접근 그룹을 직접 지정할 때만 환경 변수 `SECUREVAULT_KEYCHAIN_ACCESS_GROUP`을 같은 값으로 설정합니다. 비워 두면 그룹을 묻지 않습니다.
 - 코드 서명 신원: 강화된 런타임과 함께 안정적인 서명이 필요합니다. 키체인 ACL은 서명 신원이 바뀌면 읽기가 실패하고, 앱은 생체 인증을 끈 뒤 다음 마스터 비밀번호 잠금 해제 때 설정을 저장합니다.
 - `Info.plist`의 `NSFaceIDUsageDescription`: Touch ID/Face ID 사용 이유를 적습니다. 없으면 시스템 프롬프트가 거절될 수 있습니다.
 - 금고 키는 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`와 `biometryCurrentSet`으로 데이터 보호 키체인에 저장합니다. 등록된 생체 정보가 바뀌면 키체인 읽기가 실패하고 생체 인증은 무효가 됩니다.
@@ -59,10 +59,10 @@ cargo test --workspace
 ```
 npm run build
 ```
-데스크톱 패키지만 확인하려면 `cargo test -p keyhaven -p keyhaven-core` 입니다. 금고 암복호화·MCP 도구 테스트는 `keyhaven-core`에 있습니다.
+데스크톱 패키지만 확인하려면 `cargo test -p securevault -p securevault-core` 입니다. 금고 암복호화·MCP 도구 테스트는 `securevault-core`에 있습니다.
 
 ## 브라우저 미리보기
-웹 서버와 함께 쓰려면 아래 **웹 버전**을 보세요. `npm run dev`(http://localhost:1420)는 Tauri 개발용이며, `/api`와 `/mcp`를 `http://127.0.0.1:8787`로 프록시합니다. 실제 금고를 쓰려면 같은 머신에서 `keyhaven-web`도 켜 두세요.
+웹 서버와 함께 쓰려면 아래 **웹 버전**을 보세요. `npm run dev`(http://localhost:1420)는 Tauri 개발용이며, `/api`와 `/mcp`를 `http://127.0.0.1:8787`로 프록시합니다. 실제 금고를 쓰려면 같은 머신에서 `securevault-web`도 켜 두세요.
 
 ## MCP 연결 (외부 에이전트에서 금고 사용)
 
@@ -86,17 +86,17 @@ SecureVault 앱 안에 로컬 MCP 서버가 들어 있어서 Grok Bot이나 Clau
 메타데이터 = id, 제목, 종류, 사용자 이름, 주소, 태그, 즐겨찾기, 만든/수정 시각. 비밀 값은 절대 포함되지 않습니다.
 
 ### Claude Desktop 연결 (stdio 브리지)
-Claude Desktop은 stdio 방식을 쓰므로 함께 들어 있는 `bridge/keyhaven-mcp-bridge.mjs`(Node 18+, 의존성 없음)를 사용합니다.
+Claude Desktop은 stdio 방식을 쓰므로 함께 들어 있는 `bridge/securevault-mcp-bridge.mjs`(Node 18+, 의존성 없음)를 사용합니다.
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "keyhaven": {
+    "securevault": {
       "command": "node",
-      "args": ["/Users/<내계정>/keyhaven/vaultapp/bridge/keyhaven-mcp-bridge.mjs"],
+      "args": ["/Users/<내계정>/securevault/vaultapp/bridge/securevault-mcp-bridge.mjs"],
       "env": {
-        "KEYHAVEN_MCP_URL": "http://127.0.0.1:47821/mcp",
-        "KEYHAVEN_MCP_TOKEN": "여기에_발급받은_토큰"
+        "SECUREVAULT_MCP_URL": "http://127.0.0.1:47821/mcp",
+        "SECUREVAULT_MCP_TOKEN": "여기에_발급받은_토큰"
       }
     }
   }
@@ -117,13 +117,13 @@ Claude Desktop은 stdio 방식을 쓰므로 함께 들어 있는 `bridge/keyhave
 
 ## 웹 버전
 
-같은 React UI와 같은 `.khv` 금고 포맷을 Axum HTTP 서버로 제공합니다. 데스크톱 Tauri 앱과 Cargo 워크스페이스를 공유하며 (`crates/keyhaven-core`), 기본 바인딩은 `127.0.0.1`입니다.
+같은 React UI와 같은 `.khv` 금고 포맷을 Axum HTTP 서버로 제공합니다. 데스크톱 Tauri 앱과 Cargo 워크스페이스를 공유하며 (`crates/securevault-core`), 기본 바인딩은 `127.0.0.1`입니다.
 
 ### 실행
 1. 프론트엔드 빌드: `npm install && npm run build` (`dist/`가 생깁니다)
 2. 웹 서버:
    ```
-   cargo run -p keyhaven-web -- --dev-insecure-cookie
+   cargo run -p securevault-web -- --dev-insecure-cookie
    ```
    또는 `npm run web`
 3. 브라우저에서 http://127.0.0.1:8787
@@ -132,7 +132,7 @@ Claude Desktop은 stdio 방식을 쓰므로 함께 들어 있는 `bridge/keyhave
 주요 옵션:
 - `--bind 127.0.0.1` (기본값) — 이 컴퓨터에서만 접속
 - `--port 8787` — HTTP 포트
-- `--data-dir DIR` — 기본 `vault.khv`, 로컬 설정(`keyhaven-config.json`), MCP 설정이 저장되는 디렉터리. 금고 파일 경로는 설정에서 바꿀 수 있고, 잠금 상태와 토큰은 이 디렉터리에 남습니다
+- `--data-dir DIR` — 기본 `vault.khv`, 로컬 설정(`securevault-config.json`), MCP 설정이 저장되는 디렉터리. 금고 파일 경로는 설정에서 바꿀 수 있고, 잠금 상태와 토큰은 이 디렉터리에 남습니다
 - `--dist-dir DIR` — `npm run build` 결과 (`dist/`)
 - `--dev-insecure-cookie` — 세션 쿠키에서 `Secure`만 빼서 **http://127.0.0.1** 테스트용. 그 외 플래그는 그대로입니다 (`HttpOnly; SameSite=Strict`)
 - `--idle-timeout-secs 60` — 금고를 열기 전 서버 유휴 잠금의 예비 값입니다. 연 뒤에는 금고 안의 자동 잠금(기본 1분)이 이 값을 바꿉니다. 탭이 백그라운드여도 서버가 같은 시간으로 세션을 끊습니다. 승인 목록 조회나 SSE는 시간을 연장하지 않고, 마우스·키보드·터치로 `/api/activity`가 호출될 때만 연장됩니다
@@ -168,11 +168,11 @@ iPhone/iPad 팁:
 ### 준비
 1. 한 기기에서 금고를 연 뒤 설정 → 기기 간 동기화에서 경로를 지정합니다. 예: `~/Library/Mobile Documents/com~apple~CloudDocs/SecureVault/vault.khv`
 2. **이 경로로 옮기기**는 현재 금고 파일을 그 위치로 옮깁니다. 선택한 경로에는 암호문 파일만 있습니다.
-3. 다른 기기에서 앱을 처음 열면 `keyhaven-config.json`에는 `deviceId`만 있고 `vaultPath`가 없습니다. 첫 화면의 **기존 금고 열기**로 같은 `.khv`를 고릅니다. 데스크톱은 파일 선택 창을 쓰고, `~/Library/Mobile Documents/com~apple~CloudDocs` 아래 `vault.khv`와 `*.khv`(`.이름.khv.icloud` 자리 표시자 포함)를 깊이 제한으로 찾아 추천합니다. 웹은 서버 홈 아래에서 같은 목록을 보여주고 경로를 입력합니다. 서버는 `127.0.0.1`에만 붙습니다.
-4. 고른 파일의 앞부분(매직 `KHV1`과 헤더, 또는 예전 JSON)이 금고가 아니면 "금고가 아님 / 손상 / 지원하지 않는 버전"으로 거절합니다. iCloud 자리 표시자면 macOS에서 `brctl download`로 받기를 요청하고, 화면은 실제 파일이 나올 때까지 기다립니다. 시간 안에 안 오면 안내를 보여 줍니다. 받은 뒤에만 `vaultPath`를 저장하고 `deviceId`는 그대로 둔 채 잠금 화면으로 갑니다.
+3. 다른 기기에서 앱을 처음 열면 `securevault-config.json`에는 `deviceId`만 있고 `vaultPath`가 없습니다. 첫 화면의 **기존 금고 열기**로 같은 `.khv`를 고릅니다. 데스크톱은 파일 선택 창을 쓰고, `~/Library/Mobile Documents/com~apple~CloudDocs` 아래 `vault.khv`와 `*.khv`(`.이름.khv.icloud` 자리 표시자 포함)를 깊이 제한으로 찾아 추천합니다. 웹은 서버 홈 아래에서 같은 목록을 보여주고 경로를 입력합니다. 서버는 `127.0.0.1`에만 붙습니다.
+4. 고른 파일은 기존 금고 JSON(`version`, argon2id `kdf`, `salt`, `nonce`, `ciphertext`)이거나, 그 JSON 앞에 `KHV1`이 붙은 파일이어야 합니다. 그 구조가 아니면 "금고가 아님 / 손상 / 지원하지 않는 버전"으로 거절합니다. 이 버전이 새로 저장하는 파일은 `KHV1` 없이 이전 JSON 형식입니다. iCloud 자리 표시자면 macOS에서 `brctl download`로 받기를 요청하고, 화면은 실제 파일이 나올 때까지 기다립니다. 시간 안에 안 오면 안내를 보여 줍니다. 받은 뒤에만 `vaultPath`를 저장하고 `deviceId`는 그대로 둔 채 잠금 화면으로 갑니다.
 5. 금고가 보이는데 **금고 만들기**를 누르면, 비밀번호와 salt가 다른 별도 금고가 된다는 확인을 먼저 묻습니다.
 6. 이미 금고가 있는 기기에서는 설정 → 기기 간 동기화의 **이 경로 열기**로도 같은 파일을 지정합니다. 웹 UI는 서버 파일 시스템을 고를 수 없으므로 절대 경로를 직접 입력합니다.
-7. 잠금 상태, 세션, MCP 토큰, 패스키(`webauthn.json`), Touch ID 키체인 항목은 각 기기의 앱 데이터 폴더에 남습니다. 기기마다 기기 id가 `keyhaven-config.json`에 저장되며 이 파일은 금고 안에 넣지 않습니다.
+7. 잠금 상태, 세션, MCP 토큰, 패스키(`webauthn.json`), Touch ID 키체인 항목은 각 기기의 앱 데이터 폴더에 남습니다. 기기마다 기기 id가 `securevault-config.json`에 저장되며 이 파일은 금고 안에 넣지 않습니다.
 
 ### 병합
 - 금고에는 수정 횟수(revision)와 마지막으로 저장한 기기 id가 있습니다. 각 항목에는 id, `updated_at`, 기기별 버전 벡터가 있습니다.
@@ -195,12 +195,24 @@ iPhone/iPad 팁:
 - 이 버전이 아닌 앱은 삭제 표시와 충돌 목록을 무시할 수 있으므로, 같은 파일을 여는 기기는 이 버전을 쓰는 것이 안전합니다.
 - 브라우저 자동 입력은 제공하지 않습니다.
 
+## 이름 변경 (Keyhaven → SecureVault)
+
+0.2.1은 앱 이름을 SecureVault로 바꿉니다. 식별자와 로컬 파일 이름만 바뀌고, 공유 금고 파일은 그대로입니다.
+
+- 번들 식별자 `com.keyhaven.app` → `com.securevault.app`. 웹 데이터 폴더는 macOS `~/Library/Application Support/com.keyhaven.web` → `com.securevault.web`, Linux `~/.local/share/keyhaven` → `~/.local/share/securevault`, 상대 폴백 `keyhaven-data` → `securevault-data`입니다.
+- 로컬 설정 `keyhaven-config.json` → `securevault-config.json`. 새 파일이 없으면 예전 파일 이름을 그대로 읽습니다.
+- `.khv` 확장자는 바꾸지 않습니다. 공유 금고 파일 이름도 바꾸지 않습니다. PRF로 감싼 키의 AAD는 `keyhaven-vault-key-prf-v1` 그대로라 기존 랩이 열립니다. 새로 쓰는 금고는 0.2.0과 같은 JSON이고 `KHV1` 접두사를 붙이지 않습니다. `KHV1`으로 시작하는 파일은 읽을 때 계속 받아들입니다.
+- 첫 실행에 새 앱 데이터 폴더에 설정이 없고, 같은 부모 폴더에 예전 식별자 폴더가 있으면 그 내용을 복사합니다. `deviceId`는 유지합니다. `vaultPath`가 예전 폴더 안을 가리키면(기본 `vault.khv`) 새 폴더의 복사본으로 고치고, iCloud Drive처럼 폴더 밖 경로는 그대로 둡니다. `vault.khv`, `sync-backups`, `webauthn.json` 같은 로컬 데이터도 복사하고 원본은 남깁니다. 새 설정이 이미 있거나 마이그레이션 표시가 있으면 다시 복사하지 않습니다.
+- macOS는 키체인 서비스 `com.keyhaven.app`의 Touch ID 항목을 `com.securevault.app`으로 옮기려 합니다. 실패하면 Touch ID를 다시 등록해 달라는 안내를 띄웁니다. 웹 패스키는 출처(`localhost`)에 묶여 있으므로 그대로입니다. 패스키 파일은 데이터 폴더와 함께 복사됩니다.
+- 환경 변수는 `SECUREVAULT_*`입니다. 그 값이 비어 있으면 `KEYHAVEN_*`를 읽습니다. 예: `KEYHAVEN_DATA_DIR`, `KEYHAVEN_MCP_URL`, `KEYHAVEN_MCP_TOKEN`, `KEYHAVEN_KEYCHAIN_ACCESS_GROUP`.
+- MCP 서버 이름은 `SecureVault`입니다. 예전 브리지 경로 `bridge/keyhaven-mcp-bridge.mjs`도 동작하고, 예전 `KEYHAVEN_MCP_URL` / `KEYHAVEN_MCP_TOKEN`도 새 변수가 없을 때 쓰입니다.
+
 ## CI (GitHub Actions)
 
 `.github/workflows/build.yml`은 푸시와 수동 실행(workflow_dispatch)에서 돌아요.
 
-- **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `keyhaven-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
-- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `keyhaven-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.2.1_aarch64.dmg`입니다.
+- **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `securevault-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
+- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `securevault-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.2.1_aarch64.dmg`입니다.
 
 ### 서명 켜는 법
 저장소 Settings → Secrets and variables → Actions에 `APPLE_CERTIFICATE`(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`(앱 전용 암호), `APPLE_TEAM_ID`를 넣으면 다음 실행부터 서명·공증 단계가 자동으로 켜져요.

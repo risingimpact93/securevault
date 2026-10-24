@@ -15,16 +15,16 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum::Router;
-use keyhaven_core::mcp::{McpService, VaultView};
-use keyhaven_core::sync::{self, ConflictView, SyncStatus};
-use keyhaven_core::vault::{self, UnlockedVault, VaultError, VaultItem};
+use securevault_core::mcp::{McpService, VaultView};
+use securevault_core::sync::{self, ConflictView, SyncStatus};
+use securevault_core::vault::{self, UnlockedVault, VaultError, VaultItem};
 use secrecy::SecretString;
 use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::approval::WebApprover;
 
-pub const SESSION_COOKIE: &str = "keyhaven_session";
+pub const SESSION_COOKIE: &str = "securevault_session";
 pub const CSRF_HEADER: &str = "X-CSRF-Token";
 pub const DEFAULT_PORT: u16 = 8787;
 pub const DEFAULT_IDLE_SECS: u64 = 60;
@@ -123,6 +123,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Result<Self, String> {
         std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
+        securevault_core::migrate::migrate_sibling_data_dir(&config.data_dir).map_err(|e| e.to_string())?;
         let local = sync::load_or_create_local_config(&config.data_dir).map_err(|e| e.to_string())?;
         let vault_path = local
             .vault_path
@@ -139,7 +140,7 @@ impl AppState {
         let mcp = Arc::new(McpService::open(
             &config.data_dir,
             vault,
-            approver.clone() as Arc<dyn keyhaven_core::mcp::SecretApprover>,
+            approver.clone() as Arc<dyn securevault_core::mcp::SecretApprover>,
         )?);
         if config.mcp_enabled {
             let _ = mcp.set_listen(true, if config.port == 0 { DEFAULT_PORT } else { config.port });
@@ -847,25 +848,36 @@ pub async fn serve_for_test(config: Config) -> (u16, AppState) {
     (port, state)
 }
 
+/// `--data-dir` wins. Otherwise `SECUREVAULT_DATA_DIR`, then `KEYHAVEN_DATA_DIR`.
+pub fn resolve_data_dir(cli: Option<PathBuf>) -> PathBuf {
+    if let Some(dir) = cli {
+        return dir;
+    }
+    if let Some(dir) = securevault_core::env_var("DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    default_data_dir()
+}
+
 pub fn default_data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         #[cfg(target_os = "macos")]
         {
-            return PathBuf::from(home).join("Library/Application Support/com.keyhaven.web");
+            return PathBuf::from(home).join("Library/Application Support/com.securevault.web");
         }
         #[cfg(target_os = "windows")]
         {
             if let Some(appdata) = std::env::var_os("APPDATA") {
-                return PathBuf::from(appdata).join("com.keyhaven.web");
+                return PathBuf::from(appdata).join("com.securevault.web");
             }
-            return PathBuf::from(home).join("com.keyhaven.web");
+            return PathBuf::from(home).join("com.securevault.web");
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
-            return PathBuf::from(home).join(".local/share/keyhaven");
+            return PathBuf::from(home).join(".local/share/securevault");
         }
     }
-    PathBuf::from("keyhaven-data")
+    PathBuf::from("securevault-data")
 }
 
 pub fn default_dist_dir() -> PathBuf {

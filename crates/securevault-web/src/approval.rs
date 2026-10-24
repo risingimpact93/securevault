@@ -6,8 +6,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use keyhaven_core::mcp::{ApprovalDecision, ApprovalRequest, SecretApprover};
-use keyhaven_core::vault;
+use securevault_core::mcp::{ApprovalDecision, ApprovalRequest, SecretApprover};
+use securevault_core::vault;
 use serde::Serialize;
 use tokio::sync::{broadcast, oneshot};
 

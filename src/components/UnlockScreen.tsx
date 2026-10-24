@@ -72,6 +72,12 @@ export default function UnlockScreen({
           </div>
         </div>
         <p className="lede">마스터 비밀번호를 입력해 금고를 여세요.</p>
+        {bio?.touchIdReregister ? (
+          <p className="notice">
+            Touch ID 키체인 항목을 새 앱 이름으로 옮기지 못했습니다. 마스터 비밀번호로 연 뒤 설정에서 Touch ID를 다시
+            등록해 주세요.
+          </p>
+        ) : null}
         {passwordHint ? <p className="lede">{passwordHint}</p> : null}
         <label className="field">
           <span>마스터 비밀번호</span>

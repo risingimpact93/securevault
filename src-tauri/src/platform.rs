@@ -1,7 +1,10 @@
 //! Touch ID / Keychain and screen-lock watching.
 //! The macOS bodies are compiled only on macOS. Linux and Windows return a disabled stub.
 
-use keyhaven_core::vault::VaultError;
+use std::path::Path;
+use std::sync::OnceLock;
+
+use securevault_core::vault::VaultError;
 use tauri::AppHandle;
 
 pub fn biometrics_available() -> bool {
@@ -40,6 +43,27 @@ pub fn delete_vault_key() {
     macos::delete_vault_key();
 }
 
+/// Copy a vault key stored under the previous keychain service name.
+/// On macOS a failed copy records a flag so the UI can ask for Touch ID again.
+/// The keychain calls themselves are compiled only on macOS.
+pub fn migrate_touch_id_keychain(data_dir: &Path) {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| apply_keychain_migration(data_dir));
+}
+
+fn apply_keychain_migration(data_dir: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        if macos::migrate_keychain_item().is_err() {
+            let _ = securevault_core::migrate::record_touch_id_reregister(data_dir);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = data_dir;
+    }
+}
+
 pub fn start_screen_lock_watcher(app: AppHandle) {
     #[cfg(target_os = "macos")]
     macos::start_screen_lock_watcher(app);
@@ -56,7 +80,8 @@ mod macos {
     use std::sync::{mpsc, OnceLock};
 
     use block2::RcBlock;
-    use keyhaven_core::vault::VaultError;
+    use securevault_core::vault::VaultError;
+    use zeroize::Zeroize;
     use objc2::runtime::Bool;
     use objc2::msg_send;
     use objc2_foundation::{NSError, NSString};
@@ -71,7 +96,9 @@ mod macos {
 
     use super::super::AppState;
 
-    const SERVICE: &str = "com.keyhaven.app";
+    const SERVICE: &str = "com.securevault.app";
+    /// Previous service. The item is copied forward and the original is left in place.
+    const LEGACY_SERVICE: &str = "com.keyhaven.app";
     const ACCOUNT: &str = "vault-key";
     const ERR_SEC_USER_CANCELED: i32 = -128;
     const ERR_SEC_AUTH_FAILED: i32 = -25293;
@@ -254,20 +281,37 @@ mod macos {
     }
 
     fn key_options() -> Result<PasswordOptions, VaultError> {
+        key_options_for(SERVICE)
+    }
+
+    fn key_options_for(service: &str) -> Result<PasswordOptions, VaultError> {
         let access = SecAccessControl::create_with_protection(
             Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
             AccessControlOptions::BIOMETRY_CURRENT_SET.bits(),
         )
         .map_err(|_| VaultError::BiometricsUnavailable)?;
-        let mut opts = PasswordOptions::new_generic_password(SERVICE, ACCOUNT);
+        let mut opts = PasswordOptions::new_generic_password(service, ACCOUNT);
         opts.set_access_control(access);
         opts.use_protected_keychain();
-        if let Ok(group) = std::env::var("KEYHAVEN_KEYCHAIN_ACCESS_GROUP") {
-            if !group.is_empty() {
-                opts.set_access_group(&group);
-            }
+        if let Some(group) = securevault_core::env_var("KEYCHAIN_ACCESS_GROUP") {
+            opts.set_access_group(&group);
         }
         Ok(opts)
+    }
+
+    /// Read the vault key from the old service and store it under the new one.
+    /// Missing items are not an error. The old item is not deleted.
+    pub(super) fn migrate_keychain_item() -> Result<(), VaultError> {
+        let legacy = key_options_for(LEGACY_SERVICE)?;
+        let mut bytes = match generic_password(legacy) {
+            Ok(bytes) => bytes,
+            Err(err) if err.code() == ERR_SEC_ITEM_NOT_FOUND => return Ok(()),
+            Err(err) => return Err(map_store_error(err)),
+        };
+        let current = key_options_for(SERVICE)?;
+        let result = set_generic_password_options(&bytes, current).map_err(map_store_error);
+        bytes.zeroize();
+        result
     }
 
     fn map_store_error(err: SecError) -> VaultError {

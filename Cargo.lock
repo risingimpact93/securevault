@@ -2386,102 +2386,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyhaven"
-version = "0.2.1"
-dependencies = [
- "block2",
- "bytes",
- "http",
- "idna",
- "idna_adapter",
- "image",
- "keyhaven-core",
- "objc2",
- "objc2-foundation",
- "objc2-local-authentication",
- "plist",
- "secrecy",
- "security-framework",
- "serde",
- "serde_json",
- "serde_with",
- "tauri",
- "tauri-build",
- "tauri-codegen",
- "tauri-macros",
- "tauri-plugin",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-runtime",
- "tauri-runtime-wry",
- "tauri-utils",
- "time",
- "tokio",
- "url",
- "wayland-protocols",
- "zbus",
- "zbus_names",
- "zeroize",
- "zvariant",
- "zvariant_derive",
- "zvariant_utils",
-]
-
-[[package]]
-name = "keyhaven-core"
-version = "0.2.1"
-dependencies = [
- "argon2",
- "base64 0.22.1",
- "bytes",
- "chacha20poly1305",
- "chrono",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "rand 0.8.8",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "keyhaven-web"
-version = "0.2.1"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "bytes",
- "futures-util",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "keyhaven-core",
- "rand 0.8.8",
- "secrecy",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tower",
- "tower-http",
- "uuid",
- "webauthn-authenticator-rs",
- "webauthn-rs",
- "zeroize",
-]
-
-[[package]]
 name = "kuchikiki"
 version = "0.8.8-speedreader"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3997,6 +3901,102 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
 dependencies = [
+ "zeroize",
+]
+
+[[package]]
+name = "securevault"
+version = "0.2.1"
+dependencies = [
+ "block2",
+ "bytes",
+ "http",
+ "idna",
+ "idna_adapter",
+ "image",
+ "objc2",
+ "objc2-foundation",
+ "objc2-local-authentication",
+ "plist",
+ "secrecy",
+ "securevault-core",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tauri",
+ "tauri-build",
+ "tauri-codegen",
+ "tauri-macros",
+ "tauri-plugin",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-runtime",
+ "tauri-runtime-wry",
+ "tauri-utils",
+ "time",
+ "tokio",
+ "url",
+ "wayland-protocols",
+ "zbus",
+ "zbus_names",
+ "zeroize",
+ "zvariant",
+ "zvariant_derive",
+ "zvariant_utils",
+]
+
+[[package]]
+name = "securevault-core"
+version = "0.2.1"
+dependencies = [
+ "argon2",
+ "base64 0.22.1",
+ "bytes",
+ "chacha20poly1305",
+ "chrono",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.8",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "securevault-web"
+version = "0.2.1"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.8",
+ "secrecy",
+ "securevault-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http",
+ "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
  "zeroize",
 ]
 

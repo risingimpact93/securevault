@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a 1024x1024 Keyhaven app icon: gold keyhole in a rounded shield."""
+"""Render a 1024x1024 SecureVault app icon: gold keyhole in a rounded shield."""
 
 from __future__ import annotations
 

@@ -1142,6 +1142,11 @@ function SettingsPanel({
             완전히 잠근 뒤에는 마스터 비밀번호가 필요합니다.
           </p>
         ) : null}
+        {bio?.touchIdReregister ? (
+          <p className="notice">
+            Touch ID 키체인 항목을 새 앱 이름으로 옮기지 못했습니다. 아래에서 Touch ID를 다시 등록해 주세요.
+          </p>
+        ) : null}
         {bio?.platform === "unsupported" ? (
           <p className="lede">이 환경에서는 생체 인증을 사용할 수 없습니다. Linux에서는 꺼진 상태로 둡니다.</p>
         ) : null}

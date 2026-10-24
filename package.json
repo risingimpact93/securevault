@@ -1,5 +1,5 @@
 {
-  "name": "keyhaven",
+  "name": "securevault",
   "private": true,
   "version": "0.2.1",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "web": "cargo run -p keyhaven-web -- --dev-insecure-cookie"
+    "web": "cargo run -p securevault-web -- --dev-insecure-cookie"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

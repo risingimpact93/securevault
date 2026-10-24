@@ -858,6 +858,7 @@ fn initialize_result(params: Option<&Value>) -> Value {
     json!({
         "protocolVersion": protocol_version,
         "capabilities": {"tools": {"listChanged": false}},
+        // serverInfo.name stays SecureVault so existing MCP clients keep working.
         "serverInfo": {"name": "SecureVault", "version": crate::VERSION},
         "instructions": "Metadata tools never return passwords, card numbers, CVV, or notes. get_secret requires a fresh in-app approval every call."
     })

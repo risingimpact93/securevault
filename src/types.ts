@@ -104,6 +104,7 @@ export interface BiometricStatus {
   passwordRequired: boolean;
   reason?: "restart" | "interval";
   platform: "web" | "macos" | "unsupported";
+  touchIdReregister?: boolean;
 }
 
 export interface SettingsPatch {

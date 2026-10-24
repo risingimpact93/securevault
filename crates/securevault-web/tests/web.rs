@@ -4,8 +4,8 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use keyhaven_core::vault::{self, VaultItem};
-use keyhaven_web::{serve_for_test, Config, CSRF_HEADER, SESSION_COOKIE};
+use securevault_core::vault::{self, VaultItem};
+use securevault_web::{serve_for_test, Config, CSRF_HEADER, SESSION_COOKIE};
 use secrecy::SecretString;
 use serde_json::{json, Value};
 
@@ -1161,8 +1161,38 @@ fn open_existing_vault_keeps_device_and_rejects_bad_files() {
         assert_eq!(no_origin.status, 403);
     });
 
-    let raw = std::fs::read_to_string(data.join("keyhaven-config.json")).unwrap();
+    let raw = std::fs::read_to_string(data.join("securevault-config.json")).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["deviceId"], "device-fixed");
     assert!(parsed["vaultPath"].as_str().unwrap().ends_with("vault.khv"));
+    let legacy = std::fs::read_to_string(data.join("keyhaven-config.json")).unwrap();
+    assert!(legacy.contains("device-fixed"));
+    assert!(!legacy.contains("vaultPath"));
+}
+
+#[test]
+fn data_dir_env_falls_back_to_legacy_name() {
+    use std::sync::Mutex;
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let names = ["SECUREVAULT_DATA_DIR", "KEYHAVEN_DATA_DIR"];
+    let previous: Vec<_> = names.iter().map(|name| std::env::var(name).ok()).collect();
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("from-legacy");
+    let preferred = dir.path().join("from-new");
+    let cli = dir.path().join("from-cli");
+    std::env::remove_var("SECUREVAULT_DATA_DIR");
+    std::env::set_var("KEYHAVEN_DATA_DIR", &legacy);
+    assert_eq!(securevault_web::resolve_data_dir(None), legacy);
+    std::env::set_var("SECUREVAULT_DATA_DIR", "  ");
+    assert_eq!(securevault_web::resolve_data_dir(None), legacy);
+    std::env::set_var("SECUREVAULT_DATA_DIR", &preferred);
+    assert_eq!(securevault_web::resolve_data_dir(None), preferred);
+    assert_eq!(securevault_web::resolve_data_dir(Some(cli.clone())), cli);
+    for (name, value) in names.iter().zip(previous) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
 }

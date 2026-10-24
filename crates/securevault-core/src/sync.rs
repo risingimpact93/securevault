@@ -114,8 +114,16 @@ struct Record {
     order_versions: BTreeMap<String, u64>,
 }
 
+pub const CONFIG_FILE: &str = "securevault-config.json";
+/// Read when [`CONFIG_FILE`] is not in the directory yet.
+pub const LEGACY_CONFIG_FILE: &str = "keyhaven-config.json";
+
 pub fn local_config_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("keyhaven-config.json")
+    data_dir.join(CONFIG_FILE)
+}
+
+pub fn legacy_config_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(LEGACY_CONFIG_FILE)
 }
 
 pub fn default_vault_file(data_dir: &Path) -> PathBuf {
@@ -126,22 +134,32 @@ pub fn sync_backup_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("sync-backups")
 }
 
+fn read_config_file(path: &Path) -> Result<LocalConfigFile, VaultError> {
+    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice::<LocalConfigFile>(&bytes).unwrap_or(LocalConfigFile {
+        device_id: String::new(),
+        vault_path: None,
+    }))
+}
+
 pub fn load_or_create_local_config(data_dir: &Path) -> Result<LocalConfig, VaultError> {
     fs::create_dir_all(data_dir)?;
     let path = local_config_path(data_dir);
-    let mut file = if path.exists() {
-        let bytes = fs::read(&path)?;
-        serde_json::from_slice::<LocalConfigFile>(&bytes).unwrap_or(LocalConfigFile {
-            device_id: String::new(),
-            vault_path: None,
-        })
+    let legacy = legacy_config_path(data_dir);
+    let (mut file, found) = if path.exists() {
+        (read_config_file(&path)?, true)
+    } else if legacy.exists() {
+        (read_config_file(&legacy)?, true)
     } else {
-        LocalConfigFile {
-            device_id: String::new(),
-            vault_path: None,
-        }
+        (
+            LocalConfigFile {
+                device_id: String::new(),
+                vault_path: None,
+            },
+            false,
+        )
     };
-    let mut changed = !path.exists();
+    let mut changed = !found;
     if file.device_id.trim().is_empty() {
         file.device_id = uuid::Uuid::new_v4().to_string();
         changed = true;
@@ -843,7 +861,7 @@ fn with_vault_lock<T>(vault_path: &Path, body: impl FnOnce() -> Result<T, VaultE
 
 fn temp_lock_path(vault_path: &Path) -> PathBuf {
     let digest = sha256(normalize_path(vault_path).to_string_lossy().as_bytes());
-    std::env::temp_dir().join(format!("keyhaven-vault-{}.lock", hex_encode(&digest[..8])))
+    std::env::temp_dir().join(format!("securevault-vault-{}.lock", hex_encode(&digest[..8])))
 }
 
 fn lock_is_stale(path: &Path) -> bool {
@@ -2956,6 +2974,32 @@ mod tests {
         let raw = fs::read_to_string(local_config_path(&data)).unwrap();
         assert!(raw.contains("device-fixed"));
         assert!(raw.contains("vault.khv"));
+    }
+
+    #[test]
+    fn legacy_config_filename_is_a_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        fs::write(
+            legacy_config_path(data),
+            br#"{"deviceId":"legacy-device","vaultPath":"/cloud/Vault/vault.khv"}"#,
+        )
+        .unwrap();
+        let loaded = load_or_create_local_config(data).unwrap();
+        assert_eq!(loaded.device_id, "legacy-device");
+        assert_eq!(
+            loaded.vault_path.as_deref(),
+            Some(Path::new("/cloud/Vault/vault.khv"))
+        );
+        assert!(!local_config_path(data).exists());
+        assert!(legacy_config_path(data).is_file());
+
+        fs::write(local_config_path(data), br#"{"deviceId":"new-device"}"#).unwrap();
+        let preferred = load_or_create_local_config(data).unwrap();
+        assert_eq!(preferred.device_id, "new-device");
+        assert!(preferred.vault_path.is_none());
+        let legacy = fs::read_to_string(legacy_config_path(data)).unwrap();
+        assert!(legacy.contains("legacy-device"));
     }
 
     #[test]

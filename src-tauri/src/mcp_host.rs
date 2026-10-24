@@ -10,10 +10,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, watch};
 
-use keyhaven_core::mcp::{
+use securevault_core::mcp::{
     self, ApprovalDecision, ApprovalRequest, McpService, SecretApprover, VaultView, APPROVAL_TIMEOUT_SECS,
 };
-use keyhaven_core::vault::{self, UnlockedVault, VaultItem};
+use securevault_core::vault::{self, UnlockedVault, VaultItem};
 use crate::AppState;
 
 pub struct TauriApprover {
@@ -196,7 +196,7 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
                 return Ok(());
             }
             Err(err) => {
-                eprintln!("keyhaven mcp: {err}");
+                eprintln!("securevault mcp: {err}");
                 let port = service.port();
                 let _ = service.set_listen(false, port);
             }
@@ -222,7 +222,7 @@ fn host(state: &AppState) -> Result<Arc<McpHost>, String> {
 }
 
 #[tauri::command]
-pub fn mcp_get_settings(state: State<'_, AppState>) -> Result<keyhaven_core::mcp::PublicSettings, String> {
+pub fn mcp_get_settings(state: State<'_, AppState>) -> Result<securevault_core::mcp::PublicSettings, String> {
     host(&state)?.service.public_settings()
 }
 

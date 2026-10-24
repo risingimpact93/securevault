@@ -147,6 +147,16 @@ h3 {
   margin: 0 0 22px;
 }
 
+.notice {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(212, 168, 75, 0.14);
+  color: var(--gold-2);
+  line-height: 1.5;
+  font-size: 14px;
+}
+
 .field {
   display: flex;
   flex-direction: column;

@@ -17,8 +17,9 @@ use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const VAULT_VERSION: u32 = 1;
-/// On-disk prefix for files written by this version. Older files are raw JSON
-/// and still open. `KHV1` is the magic; the header is the JSON object after it.
+/// Accepted when reading a file that starts with this prefix.
+/// New files do not write it. They are the historical JSON envelope, which
+/// SecureVault 0.2.0 can open.
 pub const VAULT_MAGIC: &[u8] = b"KHV1";
 pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 24;
@@ -27,6 +28,8 @@ pub const KEY_LEN: usize = 32;
 pub const AUTO_LOCK_MINUTES: [u32; 6] = [1, 2, 5, 10, 30, 60];
 pub const DEFAULT_AUTO_LOCK_MINUTES: u32 = 1;
 pub const DEFAULT_PASSWORD_INTERVAL_DAYS: u32 = 14;
+/// AAD for PRF-wrapped vault keys. This bytestring is part of the on-disk wrap
+/// and stays `keyhaven-vault-key-prf-v1` so existing wraps still open.
 const PRF_WRAP_AAD: &[u8] = b"keyhaven-vault-key-prf-v1";
 
 #[cfg(not(any(test, feature = "fast-kdf")))]
@@ -871,20 +874,18 @@ pub fn create_empty_vault(
     Ok((key, salt.to_vec(), params, enc, data))
 }
 
+/// Write the historical JSON envelope (`serde_json` of the header).
+/// A `KHV1` prefix is not written. Readers still accept that prefix.
 pub fn serialize_encrypted(file: &EncryptedVault) -> Result<Vec<u8>, VaultError> {
-    let json = serde_json::to_vec(file)?;
-    let mut out = Vec::with_capacity(VAULT_MAGIC.len() + json.len());
-    out.extend_from_slice(VAULT_MAGIC);
-    out.extend_from_slice(&json);
-    Ok(out)
+    Ok(serde_json::to_vec(file)?)
 }
 
-/// Read the vault magic and header. Does not decrypt.
+/// Read the vault header. Does not decrypt.
 ///
-/// `KHV1` plus a version-1 JSON header is valid. A pre-0.2.1 file that is only
-/// that JSON (no magic) is valid too. Anything else with a different prefix is
-/// not a vault. A short or cut-off header is corrupt. A newer `version` is
-/// unsupported.
+/// The historical file is a JSON object with `version`, an argon2id `kdf`,
+/// `salt`, `nonce`, and `ciphertext`. A file that starts with `KHV1` and then
+/// that JSON is valid too. Anything else with a different prefix is not a vault.
+/// A short or cut-off header is corrupt. A newer `version` is unsupported.
 pub fn validate_vault_header(bytes: &[u8]) -> Result<u32, VaultError> {
     let json = vault_json_slice(bytes)?;
     header_version(json)
@@ -1348,7 +1349,8 @@ mod tests {
         let password = secret("header-roundtrip");
         let (_key, _salt, _params, enc, _data) = create_empty_vault(&password).unwrap();
         let bytes = serialize_encrypted(&enc).unwrap();
-        assert!(bytes.starts_with(VAULT_MAGIC));
+        assert_eq!(bytes, serde_json::to_vec(&enc).unwrap());
+        assert!(!bytes.starts_with(VAULT_MAGIC));
         assert_eq!(validate_vault_header(&bytes).unwrap(), VAULT_VERSION);
         assert_eq!(parse_encrypted(&bytes).unwrap(), enc);
 
@@ -1397,5 +1399,27 @@ mod tests {
             VaultError::Corrupt
         ));
         assert!(matches!(parse_encrypted(b"KHV").unwrap_err(), VaultError::Corrupt));
+    }
+
+    #[test]
+    fn written_vault_has_no_khv1_prefix_and_matches_old_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("format-stable");
+        let unlocked = create_vault_at(&path, &password).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(!bytes.starts_with(b"KHV1"));
+        assert!(bytes.starts_with(b"{"));
+        let enc: EncryptedVault = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&enc).unwrap());
+        assert_eq!(parse_encrypted(&bytes).unwrap(), enc);
+        assert_eq!(validate_vault_header(&bytes).unwrap(), VAULT_VERSION);
+        let again = unlock_file(&path, &password).unwrap();
+        assert_eq!(again.data.revision, unlocked.data.revision);
+
+        let mut prefixed = b"KHV1".to_vec();
+        prefixed.extend_from_slice(&bytes);
+        assert_eq!(validate_vault_header(&prefixed).unwrap(), VAULT_VERSION);
+        assert_eq!(parse_encrypted(&prefixed).unwrap(), enc);
     }
 }

@@ -1,13 +1,13 @@
 [package]
-name = "keyhaven"
+name = "securevault"
 version.workspace = true
 description = "SecureVault password manager"
-authors = ["Keyhaven"]
+authors = ["SecureVault"]
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "keyhaven_lib"
+name = "securevault_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -16,7 +16,7 @@ tauri-codegen = "=2.6.3"
 tauri-utils = "=2.9.3"
 
 [dependencies]
-keyhaven-core = { path = "../crates/keyhaven-core" }
+securevault-core = { path = "../crates/securevault-core" }
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-clipboard-manager = "=2.3.2"
 tauri-plugin-dialog = "=2.3.2"

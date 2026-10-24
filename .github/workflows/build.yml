@@ -18,9 +18,9 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - run: npm ci && npm run build
       - run: cargo test --workspace
-      - run: cargo build --release -p keyhaven-web
+      - run: cargo build --release -p securevault-web
       - uses: actions/upload-artifact@v4
-        with: { name: keyhaven-web-linux-x64, path: target/release/keyhaven-web }
+        with: { name: securevault-web-linux-x64, path: target/release/securevault-web }
 
   macos-app:
     runs-on: macos-14
@@ -52,9 +52,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           args: --target aarch64-apple-darwin --bundles app,dmg
-      # productName sets the DMG filename (SecureVault_0.2.0_aarch64.dmg). The glob tracks it.
+      # productName sets the DMG filename (SecureVault_0.2.1_aarch64.dmg). The glob tracks it.
       - uses: actions/upload-artifact@v4
         with:
-          name: keyhaven-macos-arm64-dmg
+          name: securevault-macos-arm64-dmg
           path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error

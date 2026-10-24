@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use keyhaven_web::{default_data_dir, default_dist_dir, Config, DEFAULT_IDLE_SECS, DEFAULT_PORT};
+use securevault_web::{default_dist_dir, resolve_data_dir, Config, DEFAULT_IDLE_SECS, DEFAULT_PORT};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -12,12 +12,12 @@ fn main() -> ExitCode {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(err) => {
-                    eprintln!("keyhaven-web: {err}");
+                    eprintln!("securevault-web: {err}");
                     return ExitCode::from(1);
                 }
             };
-            if let Err(err) = rt.block_on(keyhaven_web::serve(config)) {
-                eprintln!("keyhaven-web: {err}");
+            if let Err(err) = rt.block_on(securevault_web::serve(config)) {
+                eprintln!("securevault-web: {err}");
                 ExitCode::from(1)
             } else {
                 ExitCode::SUCCESS
@@ -35,7 +35,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         .parse()
         .expect("localhost");
     let mut port = DEFAULT_PORT;
-    let mut data_dir = default_data_dir();
+    let mut data_dir = None;
     let mut dist_dir = Some(default_dist_dir());
     let mut dev_insecure_cookie = false;
     let mut idle_timeout = Duration::from_secs(DEFAULT_IDLE_SECS);
@@ -69,7 +69,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
             "--data-dir" => {
                 let value = args.get(i + 1).ok_or("--data-dir requires a path")?;
-                data_dir = PathBuf::from(value);
+                data_dir = Some(PathBuf::from(value));
                 i += 2;
             }
             "--dist-dir" => {
@@ -91,7 +91,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     Ok(Config {
         bind,
         port,
-        data_dir,
+        data_dir: resolve_data_dir(data_dir),
         dist_dir,
         dev_insecure_cookie,
         idle_timeout,
@@ -107,12 +107,13 @@ fn print_help() {
 SecureVault web server
 
 USAGE:
-    keyhaven-web [OPTIONS]
+    securevault-web [OPTIONS]
 
 OPTIONS:
     --bind ADDR                 Listen address (default: 127.0.0.1)
     --port PORT                 Listen port (default: {DEFAULT_PORT})
-    --data-dir DIR              Vault and config directory
+    --data-dir DIR              Vault and config directory.
+                                Falls back to SECUREVAULT_DATA_DIR, then KEYHAVEN_DATA_DIR.
     --dist-dir DIR              Built React UI (npm run build → dist/)
     --dev-insecure-cookie       Omit the Secure flag on the session cookie
                                 (http://127.0.0.1 testing only)
