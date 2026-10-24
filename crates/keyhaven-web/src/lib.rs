@@ -292,6 +292,7 @@ impl AppState {
         if let Ok(mut guard) = self.inner.unlocked.lock() {
             if let Some(unlocked) = guard.as_mut() {
                 vault::backdate_password_unlock(&mut unlocked.data.settings, 30);
+                self.note_sync_context(unlocked);
                 let _ = vault::persist_unlocked(&path, unlocked);
                 cached = Some(unlocked.data.settings.clone());
             }
@@ -377,9 +378,7 @@ impl AppState {
         let path = self.vault_path();
         let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
         let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
-        if unlocked.device_id.is_empty() {
-            unlocked.device_id = self.inner.device_id.clone();
-        }
+        self.note_sync_context(unlocked);
         let result = f(unlocked)?;
         unlocked.dirty = true;
         vault::persist_unlocked(&path, unlocked)?;
@@ -409,9 +408,7 @@ impl AppState {
 
     fn install_unlocked(&self, mut unlocked: UnlockedVault, from_password: bool) -> Result<(), VaultError> {
         let path = self.vault_path();
-        if unlocked.device_id.is_empty() {
-            unlocked.device_id = self.inner.device_id.clone();
-        }
+        self.note_sync_context(&mut unlocked);
         unlocked.bound_path = path.clone();
         if from_password {
             vault::mark_password_unlock(&mut unlocked.data);
@@ -502,6 +499,15 @@ impl AppState {
         Ok(())
     }
 
+    fn note_sync_context(&self, unlocked: &mut UnlockedVault) {
+        if unlocked.device_id.is_empty() {
+            unlocked.device_id = self.inner.device_id.clone();
+        }
+        if unlocked.backup_dir.as_os_str().is_empty() {
+            unlocked.backup_dir = sync::sync_backup_dir(&self.inner.data_dir);
+        }
+    }
+
     /// Reload the vault file if iCloud (or another writer) changed it.
     /// Takes the path lock before the vault lock so it cannot deadlock with saves.
     pub fn poll_sync(&self) {
@@ -512,9 +518,7 @@ impl AppState {
         let Some(unlocked) = guard.as_mut() else {
             return;
         };
-        if unlocked.device_id.is_empty() {
-            unlocked.device_id = self.inner.device_id.clone();
-        }
+        self.note_sync_context(unlocked);
         if !unlocked.bound_path.as_os_str().is_empty() && unlocked.bound_path != path {
             return;
         }
@@ -571,9 +575,7 @@ impl AppState {
         {
             let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
             let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
-            if unlocked.device_id.is_empty() {
-                unlocked.device_id = self.inner.device_id.clone();
-            }
+            self.note_sync_context(unlocked);
             sync::merge_with_password(&main, &foreign, &secret, unlocked)?;
             vault::persist_unlocked(&main, unlocked)?;
         }
@@ -586,9 +588,7 @@ impl AppState {
         {
             let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
             let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
-            if unlocked.device_id.is_empty() {
-                unlocked.device_id = self.inner.device_id.clone();
-            }
+            self.note_sync_context(unlocked);
             unlocked.dirty = true;
             vault::persist_unlocked(&src, unlocked)?;
             unlocked.bound_path = dest.clone();
@@ -634,9 +634,7 @@ impl AppState {
                     unlocked.pending_password_files.clear();
                     unlocked.waiting_icloud = false;
                     unlocked.sync_error = None;
-                    if unlocked.device_id.is_empty() {
-                        unlocked.device_id = self.inner.device_id.clone();
-                    }
+                    self.note_sync_context(unlocked);
                     unlocked.bound_path = dest.clone();
                 }
                 self.remember_vault_path(dest)?;

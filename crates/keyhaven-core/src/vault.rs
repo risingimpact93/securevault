@@ -180,7 +180,7 @@ pub struct ItemBody {
     pub tags: Vec<String>,
 }
 
-/// A concurrent version that lost the newest-`updated_at` comparison.
+/// A version that lost the merge.
 /// Stored on the winning item (or its tombstone) so nothing is dropped silently.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -197,7 +197,7 @@ pub struct ItemConflict {
     pub body: ItemBody,
 }
 
-/// A deleted item. Kept so an older copy cannot bring the item back.
+/// A deleted item. An older copy cannot bring it back. A concurrent edit is kept in `conflicts`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Tombstone {
@@ -566,6 +566,10 @@ pub struct UnlockedVault {
     /// Vault path this memory belongs to. Poll skips a tick when the configured path differs,
     /// so a location switch cannot write the new vault back onto the previous file.
     pub bound_path: PathBuf,
+    /// Local `sync-backups` directory. Empty leaves a `.merged-bak` beside the vault.
+    pub backup_dir: PathBuf,
+    /// Conflict siblings already merged in memory. Moved only after a successful save.
+    pub pending_archive: Vec<PathBuf>,
 }
 
 fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultData) -> UnlockedVault {
@@ -581,6 +585,8 @@ fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultDa
         waiting_icloud: false,
         sync_error: None,
         bound_path: PathBuf::new(),
+        backup_dir: PathBuf::new(),
+        pending_archive: Vec::new(),
     }
 }
 

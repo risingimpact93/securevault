@@ -47,6 +47,17 @@ fn bind_device(unlocked: &mut UnlockedVault, device_id: &str) {
     }
 }
 
+fn prepare_sync(app: &AppHandle, unlocked: &mut UnlockedVault) -> Result<(), String> {
+    let local = ensure_local(app)?;
+    if unlocked.device_id.is_empty() {
+        unlocked.device_id = local.device_id;
+    }
+    if unlocked.backup_dir.as_os_str().is_empty() {
+        unlocked.backup_dir = sync::sync_backup_dir(&local.data_dir);
+    }
+    Ok(())
+}
+
 fn accept_password_unlock(app: &AppHandle, state: &AppState, mut unlocked: UnlockedVault) -> Result<(), String> {
     let path = vault_path(app)?;
     let device = device_id(app)?;
@@ -183,6 +194,7 @@ fn remember_vault_path(app: &AppHandle, path: PathBuf) -> Result<(), String> {
 }
 
 fn persist(app: &AppHandle, path: &Path, unlocked: &mut UnlockedVault) -> Result<(), String> {
+    prepare_sync(app, unlocked)?;
     persist_unlocked(path, unlocked).map_err(err)?;
     app.state::<AppState>().generation.fetch_add(1, Ordering::Relaxed);
     Ok(())
@@ -213,6 +225,9 @@ fn poll_desktop(app: &AppHandle) {
     };
     if unlocked.device_id.is_empty() {
         unlocked.device_id = local.device_id.clone();
+    }
+    if unlocked.backup_dir.as_os_str().is_empty() {
+        unlocked.backup_dir = sync::sync_backup_dir(&local.data_dir);
     }
     if !unlocked.bound_path.as_os_str().is_empty() && unlocked.bound_path != local.vault_path {
         return;
@@ -528,6 +543,7 @@ async fn biometric_unlock(app: AppHandle) -> Result<(), String> {
     }
     bind_device(&mut unlocked, &device);
     unlocked.bound_path = path.clone();
+    prepare_sync(&app, &mut unlocked)?;
     sync::pull_vault(&path, &mut unlocked).map_err(err)?;
     remember_settings(&state, &unlocked.data.settings);
     let mut guard = require_unlocked(&state)?;

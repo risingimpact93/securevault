@@ -218,7 +218,8 @@ export default function SyncSettings({
           <h3>충돌 {conflicts.length}건</h3>
           <p className="lede">
             같은 항목을 서로 다른 기기에서 고치면 더 최근 시각이 남고, 진 쪽은 여기에 보관됩니다. 시각이 같으면 기기
-            id가 큰 쪽이 이깁니다.
+            id가 큰 쪽이 이깁니다. 삭제와 편집이 동시에 있으면 삭제가 남고, 그 편집은 여기에 보관됩니다. 보관
+            버전으로 되돌리면 삭제된 항목도 다시 살아납니다.
           </p>
           {conflicts.map((conflict) => (
             <div className="conflict-row" key={`${conflict.itemId}:${conflict.conflictId}`}>
@@ -244,7 +245,7 @@ export default function SyncSettings({
                   disabled={busy}
                   onClick={() => void resolve(conflict.itemId, conflict.conflictId, "restore")}
                 >
-                  보관 버전으로 되돌리기
+                  {conflict.currentDeleted ? "삭제된 항목 복원" : "보관 버전으로 되돌리기"}
                 </button>
               </div>
             </div>

@@ -3,6 +3,7 @@
 //! Each install keeps its device id in a local config file. The vault file stores a
 //! revision, the last writer, per-item version vectors, tombstones, and conflict copies.
 //! A save re-reads the file and merges when the nonce, revision, or ciphertext hash changed.
+//! After that save, merged conflict files move to the local `sync-backups` directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -22,6 +23,8 @@ use crate::vault::{
 pub const SYNC_POLL_SECS: u64 = 3;
 pub const LEGACY_DEVICE: &str = "legacy";
 pub const LEGACY_TIMESTAMP: &str = "1970-01-01T00:00:00Z";
+pub const SYNC_BACKUP_KEEP: usize = 10;
+pub const SYNC_BACKUP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Clone, Debug)]
 pub struct FileStamp {
@@ -109,6 +112,10 @@ pub fn local_config_path(data_dir: &Path) -> PathBuf {
 
 pub fn default_vault_file(data_dir: &Path) -> PathBuf {
     data_dir.join("vault.khv")
+}
+
+pub fn sync_backup_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("sync-backups")
 }
 
 pub fn load_or_create_local_config(data_dir: &Path) -> Result<LocalConfig, VaultError> {
@@ -277,7 +284,7 @@ pub fn is_conflict_sibling(vault_path: &Path, candidate: &Path) -> bool {
     let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if name == vault_name || name.ends_with(".merged-bak") || name.ends_with(".tmp") {
+    if name == vault_name || name.ends_with(".tmp") || is_merged_backup_name(name) {
         return false;
     }
     let Some(stem) = vault_path.file_stem().and_then(|stem| stem.to_str()) else {
@@ -343,7 +350,9 @@ pub fn merge_with_password(
     if foreign_path == main_path {
         unlocked.stamp = capture_stamp(&foreign_path, file_revision)?;
     } else if is_conflict_sibling(&main_path, &foreign_path) {
-        archive_merged(&foreign_path)?;
+        // Archive only after the merged vault is saved. A different-password sibling
+        // never reaches this branch because decrypt failed before merge_vault.
+        remember_pending_archive(unlocked, foreign_path);
     }
     unlocked.dirty = true;
     unlocked.sync_error = None;
@@ -434,6 +443,9 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
         let mut archived = Vec::new();
         let mut sibling_merged = false;
         for sibling in conflict_siblings(path) {
+            if is_pending_archive(unlocked, &sibling) {
+                continue;
+            }
             let sibling_bytes = fs::read(&sibling)?;
             let sibling_enc = match parse_encrypted(&sibling_bytes) {
                 Ok(enc) => enc,
@@ -473,8 +485,12 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
             continue;
         }
         write_current(path, unlocked)?;
-        for sibling in archived {
-            archive_merged(&sibling)?;
+        let mut freshly = archived;
+        freshly.append(&mut unlocked.pending_archive);
+        if let Err(err) = finalize_merged_backups(path, &unlocked.backup_dir, &freshly) {
+            unlocked.dirty = true;
+            unlocked.pending_archive = freshly.into_iter().filter(|pending| pending.exists()).collect();
+            return Err(err);
         }
         return Ok(());
     }
@@ -554,7 +570,36 @@ fn lock_is_stale(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn archive_merged(path: &Path) -> Result<(), VaultError> {
+fn remember_pending_archive(unlocked: &mut UnlockedVault, path: PathBuf) {
+    if !is_pending_archive(unlocked, &path) {
+        unlocked.pending_archive.push(path);
+    }
+}
+
+fn is_pending_archive(unlocked: &UnlockedVault, path: &Path) -> bool {
+    unlocked.pending_archive.iter().any(|pending| same_path(pending, path))
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right || normalize_path(left) == normalize_path(right)
+}
+
+/// `name.merged-bak` or `name.merged-bak.<digits>` (optional extra numeric suffixes).
+fn is_merged_backup_name(name: &str) -> bool {
+    let Some(index) = name.rfind(".merged-bak") else {
+        return false;
+    };
+    let rest = &name[index + ".merged-bak".len()..];
+    if rest.is_empty() {
+        return true;
+    }
+    rest.starts_with('.')
+        && rest[1..]
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn archive_merged_inplace(path: &Path) -> Result<(), VaultError> {
     let mut name = path.as_os_str().to_os_string();
     name.push(".merged-bak");
     let mut dest = PathBuf::from(&name);
@@ -568,6 +613,155 @@ fn archive_merged(path: &Path) -> Result<(), VaultError> {
         dest = PathBuf::from(numbered);
     }
     fs::rename(path, dest)?;
+    Ok(())
+}
+
+/// Move merged siblings and leftover `*.merged-bak` files out of the sync folder.
+/// Files that were not merged (still a conflict sibling) stay where they are.
+fn finalize_merged_backups(
+    vault_path: &Path,
+    backup_dir: &Path,
+    freshly_merged: &[PathBuf],
+) -> Result<(), VaultError> {
+    let freshly = dedup_paths(freshly_merged);
+    if backup_dir.as_os_str().is_empty() {
+        for path in &freshly {
+            if path.exists() && !same_path(path, vault_path) {
+                archive_merged_inplace(path)?;
+            }
+        }
+        return Ok(());
+    }
+    fs::create_dir_all(backup_dir)?;
+    for path in &freshly {
+        if path.exists() && !same_path(path, vault_path) {
+            move_into_backup(path, backup_dir, &backup_name_for(path))?;
+        }
+    }
+    if let Some(folder) = vault_path.parent() {
+        if !same_path(folder, backup_dir) {
+            for path in merged_backup_files(folder) {
+                if path.exists() && !same_path(&path, vault_path) {
+                    move_into_backup(&path, backup_dir, &backup_name_for(&path))?;
+                }
+            }
+        }
+    }
+    prune_sync_backups(backup_dir, SystemTime::now())
+}
+
+fn backup_name_for(path: &Path) -> String {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("vault.khv");
+    if is_merged_backup_name(name) {
+        name.to_string()
+    } else {
+        format!("{name}.merged-bak")
+    }
+}
+
+fn merged_backup_files(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_merged_backup_name(name) {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !out.iter().any(|existing| same_path(existing, path)) {
+            out.push(path.clone());
+        }
+    }
+    out
+}
+
+fn move_into_backup(src: &Path, backup_dir: &Path, file_name: &str) -> Result<(), VaultError> {
+    let mtime = fs::metadata(src).and_then(|meta| meta.modified()).ok();
+    let dest = unique_backup_path(backup_dir, file_name);
+    if same_path(src, &dest) {
+        return Ok(());
+    }
+    if fs::rename(src, &dest).is_err() {
+        fs::copy(src, &dest)?;
+        fs::remove_file(src)?;
+    }
+    if let Some(mtime) = mtime {
+        if let Ok(file) = File::options().write(true).open(&dest) {
+            let _ = file.set_modified(mtime);
+        }
+    }
+    Ok(())
+}
+
+fn unique_backup_path(dir: &Path, file_name: &str) -> PathBuf {
+    let direct = dir.join(file_name);
+    if !direct.exists() {
+        return direct;
+    }
+    let millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    for extra in 0..10_000 {
+        let candidate = if extra == 0 {
+            dir.join(format!("{file_name}.{millis}"))
+        } else {
+            dir.join(format!("{file_name}.{millis}.{extra}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{file_name}.{millis}.10001"))
+}
+
+fn prune_sync_backups(dir: &Path, now: SystemTime) -> Result<(), VaultError> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    let mut keep = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_merged_backup_name(name) {
+            continue;
+        }
+        let modified = entry.metadata().and_then(|meta| meta.modified()).unwrap_or(now);
+        let old = now
+            .duration_since(modified)
+            .ok()
+            .map(|age| age > SYNC_BACKUP_MAX_AGE)
+            .unwrap_or(false);
+        if old {
+            fs::remove_file(&path)?;
+        } else {
+            keep.push((path, modified));
+        }
+    }
+    keep.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (path, _) in keep.into_iter().skip(SYNC_BACKUP_KEEP) {
+        fs::remove_file(path)?;
+    }
     Ok(())
 }
 
@@ -797,9 +991,9 @@ pub fn resolve_conflict(
     }
     let tombstone_fp = tombstone_fingerprint(&tombstone);
     remember_resolved(&mut tombstone.resolved_conflicts, &tombstone_fp);
-    let mut versions = vv_max(&tombstone.versions, &conflict.versions);
-    let next = versions.get(&device).copied().unwrap_or(0).saturating_add(1);
-    versions.insert(device.clone(), next);
+    // The new counter must strictly dominate the tombstone, or the next merge deletes again.
+    let versions = bump_device(&vv_max(&tombstone.versions, &conflict.versions), &device);
+    debug_assert!(vv_dominates(&versions, &tombstone.versions));
     item.versions = versions;
     item.updated_at = now_rfc3339();
     item.updated_by = Some(device);
@@ -992,10 +1186,20 @@ fn merge_records(left: Record, right: Record) -> Record {
     if left.versions == right.versions && left.deleted == right.deleted && left.content == right.content {
         return absorb(left, right);
     }
-    let left_wins = prefer_left(&left, &right);
-    let (mut winner, loser) = if left_wins { (left, right) } else { (right, left) };
-    let loser_conflict = record_to_conflict(&loser);
-    winner.conflicts.push(loser_conflict);
+    // A delete beats a concurrent edit (the edit's vector is not causally after the delete).
+    // The edit is kept as a conflict so the user can restore it.
+    let (winner, loser) = if left.deleted != right.deleted {
+        if left.deleted { (left, right) } else { (right, left) }
+    } else if prefer_left(&left, &right) {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    keep_conflict(winner, loser)
+}
+
+fn keep_conflict(mut winner: Record, loser: Record) -> Record {
+    winner.conflicts.push(record_to_conflict(&loser));
     winner.conflicts.extend(loser.conflicts);
     winner.resolved = union_strings(winner.resolved, loser.resolved);
     winner.versions = vv_max(&winner.versions, &loser.versions);
@@ -1240,6 +1444,13 @@ fn vv_dominates(left: &BTreeMap<String, u64>, right: &BTreeMap<String, u64>) -> 
     strict
 }
 
+fn bump_device(versions: &BTreeMap<String, u64>, device: &str) -> BTreeMap<String, u64> {
+    let mut next = versions.clone();
+    let value = next.get(device).copied().unwrap_or(0).saturating_add(1);
+    next.insert(device.to_string(), value);
+    next
+}
+
 fn device_or_default(device_id: &str) -> String {
     if device_id.is_empty() {
         "device".to_string()
@@ -1390,7 +1601,8 @@ mod tests {
         let mut edited = item.clone();
         edited.title = "Edited".to_string();
         edited.password = Some("edited-secret".to_string());
-        edited.updated_at = "2026-04-02T00:00:00Z".to_string();
+        // Newer wall clock than the delete, but the vector is not causally after it.
+        edited.updated_at = "2026-04-10T00:00:00Z".to_string();
         edited.updated_by = Some("device-b".to_string());
         edited.versions = versions(&[("device-a", 1), ("device-b", 1)]);
         edit.items.push(edited);
@@ -1405,12 +1617,39 @@ mod tests {
             body: item.body(),
         });
         merge_vault(&mut edit, &deletion);
-        assert!(edit.items.is_empty(), "the newer delete stays deleted");
+        assert!(edit.items.is_empty(), "a concurrent edit must not revive a delete");
         assert_eq!(edit.tombstones.len(), 1);
         assert_eq!(edit.tombstones[0].conflicts.len(), 1);
         assert_eq!(edit.tombstones[0].conflicts[0].body.title, "Edited");
         assert_eq!(edit.tombstones[0].conflicts[0].body.password.as_deref(), Some("edited-secret"));
         assert!(!edit.tombstones[0].conflicts[0].deleted);
+
+        let mut from_delete = deletion.clone();
+        let mut live = VaultData::default();
+        let mut edited_again = item.clone();
+        edited_again.title = "Edited".to_string();
+        edited_again.password = Some("edited-secret".to_string());
+        edited_again.updated_at = "2026-04-10T00:00:00Z".to_string();
+        edited_again.updated_by = Some("device-b".to_string());
+        edited_again.versions = versions(&[("device-a", 1), ("device-b", 1)]);
+        live.items.push(edited_again);
+        merge_vault(&mut from_delete, &live);
+        assert!(from_delete.items.is_empty());
+        assert_eq!(from_delete.tombstones[0].conflicts.len(), 1);
+        assert_eq!(from_delete.tombstones[0].conflicts[0].body.title, "Edited");
+
+        let mut revived = VaultData::default();
+        let mut after = item.clone();
+        after.title = "Revived".to_string();
+        after.password = Some("revived-secret".to_string());
+        after.updated_at = "2026-03-01T00:00:00Z".to_string();
+        after.updated_by = Some("device-b".to_string());
+        after.versions = versions(&[("device-a", 2), ("device-b", 1)]);
+        revived.items.push(after);
+        merge_vault(&mut revived, &deletion);
+        assert_eq!(revived.items.len(), 1, "an edit causally after the delete revives the item");
+        assert_eq!(revived.items[0].title, "Revived");
+        assert!(revived.tombstones.is_empty());
     }
 
     #[test]
@@ -1566,6 +1805,7 @@ mod tests {
         assert!(is_conflict_sibling(&vault_path, &dir.path().join("vault (Conflicted Copy).khv")));
         assert!(!is_conflict_sibling(&vault_path, &vault_path));
         assert!(!is_conflict_sibling(&vault_path, &dir.path().join("vault 2.khv.merged-bak")));
+        assert!(!is_conflict_sibling(&vault_path, &dir.path().join("vault 2.khv.merged-bak.171000")));
         assert!(!is_conflict_sibling(&vault_path, &dir.path().join("notes.khv")));
         let placeholder = icloud_placeholder(&vault_path).unwrap();
         assert_eq!(placeholder.file_name().unwrap(), ".vault.khv.icloud");
@@ -1574,5 +1814,264 @@ mod tests {
         assert!(matches!(err, VaultError::WaitingForIcloud));
         let status = status_of(&vault_path, "device", None, 0, true);
         assert_eq!(status.state, "waiting_icloud");
+    }
+
+    fn tombstone_of(item: &VaultItem, updated_at: &str, device: &str, version_pairs: &[(&str, u64)]) -> Tombstone {
+        Tombstone {
+            id: item.id.clone(),
+            updated_at: updated_at.to_string(),
+            updated_by: Some(device.to_string()),
+            versions: versions(version_pairs),
+            conflicts: Vec::new(),
+            resolved_conflicts: Vec::new(),
+            body: item.body(),
+        }
+    }
+
+    fn assert_restored_alive(data: &VaultData) {
+        assert_eq!(data.items.len(), 1, "restored item must stay alive");
+        assert_eq!(data.items[0].title, "Edited");
+        assert_eq!(data.items[0].password.as_deref(), Some("edited-secret"));
+        assert!(data.tombstones.is_empty(), "the tombstone must not win again");
+    }
+
+    #[test]
+    fn restore_of_concurrent_edit_survives_later_merges() {
+        let item = live_item("same", "Original", "2026-04-01T00:00:00Z", "device-a", &[("device-a", 1)]);
+        let mut edited = item.clone();
+        edited.title = "Edited".to_string();
+        edited.password = Some("edited-secret".to_string());
+        edited.updated_at = "2026-05-01T00:00:00Z".to_string();
+        edited.updated_by = Some("device-b".to_string());
+        edited.versions = versions(&[("device-a", 1), ("device-b", 1)]);
+        let tombstone = tombstone_of(&item, "2026-04-02T00:00:00Z", "device-a", &[("device-a", 2)]);
+
+        let mut edit = VaultData::default();
+        edit.items.push(edited);
+        let mut deletion = VaultData::default();
+        deletion.tombstones.push(tombstone.clone());
+        merge_vault(&mut edit, &deletion);
+        assert!(edit.items.is_empty());
+        let views = list_conflicts(&edit);
+        assert_eq!(views.len(), 1);
+        assert!(views[0].current_deleted);
+        assert!(!views[0].conflict_deleted);
+        assert_eq!(views[0].conflict_title, "Edited");
+        assert_eq!(views[0].item_id, "same");
+
+        let mut restored = edit.clone();
+        resolve_conflict(&mut restored, "same", &views[0].conflict_id, "restore", "device-b").unwrap();
+        assert_restored_alive(&restored);
+        assert!(list_conflicts(&restored).is_empty());
+        assert!(vv_dominates(&restored.items[0].versions, &edit.tombstones[0].versions));
+        assert!(vv_dominates(&restored.items[0].versions, &tombstone.versions));
+
+        let mut from_merged_tombstone = edit.clone();
+        merge_vault(&mut from_merged_tombstone, &restored);
+        assert_restored_alive(&from_merged_tombstone);
+        let mut into_merged_tombstone = restored.clone();
+        merge_vault(&mut into_merged_tombstone, &edit);
+        assert_restored_alive(&into_merged_tombstone);
+
+        let mut from_original = deletion.clone();
+        merge_vault(&mut from_original, &restored);
+        assert_restored_alive(&from_original);
+        let mut into_original = restored.clone();
+        merge_vault(&mut into_original, &deletion);
+        assert_restored_alive(&into_original);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let mut saved = vault::create_vault_at(&path, &secret("restore-persists")).unwrap();
+        saved.device_id = "device-b".to_string();
+        saved.data.items = restored.items.clone();
+        saved.data.tombstones = restored.tombstones.clone();
+        saved.dirty = true;
+        save_vault(&path, &mut saved).unwrap();
+        let loaded = vault::unlock_file(&path, &secret("restore-persists")).unwrap();
+        let mut round = loaded.data.clone();
+        merge_vault(&mut round, &edit);
+        assert_restored_alive(&round);
+        let mut back = edit.clone();
+        merge_vault(&mut back, &loaded.data);
+        assert_restored_alive(&back);
+    }
+
+    fn set_mtime(path: &Path, when: SystemTime) {
+        let file = File::options().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            if entry.path().is_file() {
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn backup_prune_by_age_and_count() {
+        let now = SystemTime::now();
+        let age_dir = tempfile::tempdir().unwrap();
+        let recent = age_dir.path().join("recent.khv.merged-bak");
+        let week = age_dir.path().join("week.khv.merged-bak");
+        let old = age_dir.path().join("old.khv.merged-bak.1000");
+        fs::write(&recent, b"recent").unwrap();
+        fs::write(&week, b"week").unwrap();
+        fs::write(&old, b"old").unwrap();
+        set_mtime(&recent, now.checked_sub(Duration::from_secs(60)).unwrap());
+        set_mtime(&week, now.checked_sub(SYNC_BACKUP_MAX_AGE).unwrap());
+        set_mtime(&old, now.checked_sub(SYNC_BACKUP_MAX_AGE + Duration::from_secs(60)).unwrap());
+        prune_sync_backups(age_dir.path(), now).unwrap();
+        let aged = file_names(age_dir.path());
+        assert!(aged.iter().any(|name| name.starts_with("recent")));
+        assert!(aged.iter().any(|name| name.starts_with("week")), "exactly 7 days is kept");
+        assert!(aged.iter().all(|name| !name.starts_with("old")));
+
+        let count_dir = tempfile::tempdir().unwrap();
+        for index in 0..12 {
+            let path = count_dir.path().join(format!("keep-{index:02}.khv.merged-bak"));
+            fs::write(&path, b"bak").unwrap();
+            let age = Duration::from_secs((index as u64 + 1) * 60);
+            set_mtime(&path, now.checked_sub(age).unwrap());
+        }
+        prune_sync_backups(count_dir.path(), now).unwrap();
+        let kept = file_names(count_dir.path());
+        assert_eq!(kept.len(), SYNC_BACKUP_KEEP);
+        assert!(kept.iter().any(|name| name.starts_with("keep-00")));
+        assert!(kept.iter().any(|name| name.starts_with("keep-09")));
+        assert!(kept.iter().all(|name| !name.starts_with("keep-10")));
+        assert!(kept.iter().all(|name| !name.starts_with("keep-11")));
+    }
+
+    #[test]
+    fn finalize_moves_merged_bak_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let sync_dir = dir.path().join("sync");
+        let backup = dir.path().join("app").join("sync-backups");
+        fs::create_dir_all(&sync_dir).unwrap();
+        let vault = sync_dir.join("vault.khv");
+        fs::write(&vault, b"vault").unwrap();
+        let bak = sync_dir.join("vault 2.khv.merged-bak");
+        fs::write(&bak, b"bak").unwrap();
+        let stamped = sync_dir.join("vault 2.khv.merged-bak.55");
+        fs::write(&stamped, b"stamped").unwrap();
+        let pending = sync_dir.join("vault (conflict).khv");
+        fs::write(&pending, b"pending").unwrap();
+        let fresh = sync_dir.join("vault 3.khv");
+        fs::write(&fresh, b"fresh").unwrap();
+        fs::write(sync_dir.join("notes.txt"), b"leave-me").unwrap();
+        finalize_merged_backups(&vault, &backup, &[fresh.clone()]).unwrap();
+        assert!(!fresh.exists());
+        assert!(!bak.exists());
+        assert!(!stamped.exists());
+        assert_eq!(fs::read(&pending).unwrap(), b"pending");
+        assert_eq!(fs::read(sync_dir.join("notes.txt")).unwrap(), b"leave-me");
+        assert_eq!(fs::read(&vault).unwrap(), b"vault");
+        let names = file_names(&backup);
+        assert!(names.iter().any(|name| name.starts_with("vault 3.khv.merged-bak")));
+        assert!(names.iter().any(|name| name.starts_with("vault 2.khv.merged-bak") && !name.contains(".55")));
+        assert!(names.iter().any(|name| name.contains("merged-bak.55")));
+        assert!(names.iter().all(|name| !name.contains("conflict")));
+        assert!(names.iter().all(|name| !name.contains("notes")));
+        assert!(file_names(&sync_dir).iter().all(|name| !name.contains("merged-bak")));
+    }
+
+    #[test]
+    fn merged_backups_move_prune_and_leave_unmerged_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let sync_dir = dir.path().join("icloud");
+        fs::create_dir_all(&sync_dir).unwrap();
+        let path = sync_dir.join("vault.khv");
+        let mut main = vault::create_vault_at(&path, &secret("password-a")).unwrap();
+        main.device_id = "device-a".to_string();
+        main.data.items.push(live_item(
+            "local",
+            "Local",
+            "2026-07-01T00:00:00Z",
+            "device-a",
+            &[("device-a", 1)],
+        ));
+        main.dirty = true;
+        save_vault(&path, &mut main).unwrap();
+
+        // A real iCloud sibling is a divergent copy of the same ciphertext key.
+        let sibling = sync_dir.join("vault 2.khv");
+        fs::copy(&path, &sibling).unwrap();
+        let mut other = vault::unlock_file(&sibling, &secret("password-a")).unwrap();
+        other.device_id = "device-b".to_string();
+        other.data.items.push(live_item(
+            "foreign",
+            "Foreign",
+            "2026-07-02T00:00:00Z",
+            "device-b",
+            &[("device-b", 1)],
+        ));
+        other.dirty = true;
+        save_vault(&sibling, &mut other).unwrap();
+
+        let pending = sync_dir.join("vault (conflict).khv");
+        let mut foreign = vault::create_vault_at(&pending, &secret("password-b")).unwrap();
+        foreign.device_id = "device-c".to_string();
+        foreign.data.items.push(live_item(
+            "secret-item",
+            "Secret",
+            "2026-07-03T00:00:00Z",
+            "device-c",
+            &[("device-c", 1)],
+        ));
+        foreign.dirty = true;
+        save_vault(&pending, &mut foreign).unwrap();
+        let pending_bytes = fs::read(&pending).unwrap();
+
+        let now = SystemTime::now();
+        for index in 1..=12 {
+            let file = sync_dir.join(format!("aged-{index:02}.khv.merged-bak"));
+            fs::write(&file, format!("aged-{index}")).unwrap();
+            set_mtime(&file, now.checked_sub(Duration::from_secs(index * 3600)).unwrap());
+        }
+        let stamped = sync_dir.join("extra.khv.merged-bak.424242");
+        fs::write(&stamped, b"stamped").unwrap();
+        set_mtime(&stamped, now.checked_sub(Duration::from_secs(30 * 60)).unwrap());
+        let old = sync_dir.join("old-8d.khv.merged-bak");
+        fs::write(&old, b"old").unwrap();
+        set_mtime(&old, now.checked_sub(Duration::from_secs(8 * 24 * 60 * 60)).unwrap());
+        let older = sync_dir.join("old-10d.khv.merged-bak.999");
+        fs::write(&older, b"older").unwrap();
+        set_mtime(&older, now.checked_sub(Duration::from_secs(10 * 24 * 60 * 60)).unwrap());
+        fs::write(sync_dir.join("notes.txt"), b"leave-me").unwrap();
+
+        let mut handle = vault::unlock_file(&path, &secret("password-a")).unwrap();
+        handle.device_id = "device-a".to_string();
+        handle.backup_dir = dir.path().join("appdata").join("sync-backups");
+        pull_vault(&path, &mut handle).unwrap();
+
+        assert!(handle.data.items.iter().any(|item| item.title == "Foreign"));
+        assert!(handle.data.items.iter().all(|item| item.title != "Secret"));
+        assert!(pending.exists());
+        assert_eq!(fs::read(&pending).unwrap(), pending_bytes);
+        assert!(!sibling.exists());
+        assert!(handle
+            .pending_password_files
+            .iter()
+            .any(|pending_path| pending_path.contains("vault (conflict).khv")));
+        assert_eq!(fs::read(sync_dir.join("notes.txt")).unwrap(), b"leave-me");
+        assert!(file_names(&sync_dir).iter().all(|name| !name.contains("merged-bak")));
+
+        let backup_names = file_names(&handle.backup_dir);
+        assert_eq!(backup_names.len(), SYNC_BACKUP_KEEP);
+        assert!(backup_names.iter().any(|name| name.starts_with("vault 2.khv.merged-bak")));
+        assert!(backup_names.iter().any(|name| name.contains("424242")));
+        assert!(backup_names.iter().any(|name| name.starts_with("aged-01")));
+        assert!(backup_names.iter().any(|name| name.starts_with("aged-08")));
+        assert!(backup_names.iter().all(|name| !name.starts_with("aged-09")));
+        assert!(backup_names.iter().all(|name| !name.starts_with("aged-12")));
+        assert!(backup_names.iter().all(|name| !name.starts_with("old-")));
+        assert!(backup_names.iter().all(|name| !name.contains("conflict")));
+        assert!(backup_names.iter().all(|name| name.contains("merged-bak")));
     }
 }
