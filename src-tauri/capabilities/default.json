@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Keyhaven main window capabilities",
+  "description": "SecureVault main window capabilities",
   "windows": ["main"],
   "permissions": [
     "core:default",

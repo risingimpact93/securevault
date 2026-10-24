@@ -198,7 +198,7 @@ pub struct ItemConflict {
 }
 
 /// A deleted item. An older copy cannot bring it back. A concurrent edit is kept in `conflicts`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Tombstone {
     pub id: String,
@@ -215,6 +215,15 @@ pub struct Tombstone {
     /// Body at delete time, so a concurrent edit does not erase it.
     #[serde(default)]
     pub body: ItemBody,
+    /// Fractional index. Merged separately from the item body.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order_updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_updated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub order_versions: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -260,6 +269,15 @@ pub struct VaultItem {
     pub resolved_conflicts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_by: Option<String>,
+    /// Fractional index. Empty on vaults saved before reordering existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order_updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_updated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub order_versions: BTreeMap<String, u64>,
 }
 
 impl VaultItem {
@@ -284,6 +302,10 @@ impl VaultItem {
             conflicts: Vec::new(),
             resolved_conflicts: Vec::new(),
             updated_by: None,
+            order: String::new(),
+            order_updated_at: String::new(),
+            order_updated_by: None,
+            order_versions: BTreeMap::new(),
         }
     }
 

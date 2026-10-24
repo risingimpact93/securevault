@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   addItem,
   biometricDisable,
@@ -12,6 +12,7 @@ import {
   getVaultSettings,
   importVault,
   mapError,
+  moveItem,
   pickOpenPath,
   pickSavePath,
   updateItem,
@@ -30,6 +31,7 @@ import type {
   VaultItem,
   VaultSettings,
 } from "../types";
+import BuildStamp from "./BuildStamp";
 import Logo from "./Logo";
 import McpSettings from "./McpSettings";
 import SyncSettings from "./SyncSettings";
@@ -82,6 +84,12 @@ function itemToDraft(item: VaultItem): ItemDraft {
   };
 }
 
+function compareItems(a: VaultItem, b: VaultItem): number {
+  const order = (a.order ?? "").localeCompare(b.order ?? "");
+  if (order !== 0) return order;
+  return a.id.localeCompare(b.id);
+}
+
 function subtitle(item: VaultItem): string {
   if (item.itemType === "login") return item.username || item.url || "로그인";
   if (item.itemType === "card") return item.cardholder || item.number || "카드";
@@ -130,6 +138,9 @@ export default function MainScreen({
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [genOpen, setGenOpen] = useState(false);
   const [genForField, setGenForField] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | "end" | null>(null);
+  const moving = useRef(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -152,7 +163,7 @@ export default function MainScreen({
         .join(" ")
         .toLowerCase();
       return blob.includes(q);
-    });
+    }).sort(compareItems);
   }, [items, filter, query]);
 
   useEffect(() => {
@@ -221,6 +232,54 @@ export default function MainScreen({
     }
   }
 
+  async function placeItem(id: string, beforeId: string | null) {
+    if (moving.current) return;
+    if (beforeId === id) return;
+    moving.current = true;
+    try {
+      await moveItem(id, beforeId);
+      await onReload();
+    } catch (err) {
+      onToast({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      moving.current = false;
+      setDragId(null);
+      setOverId(null);
+    }
+  }
+
+  function moveUp(index: number) {
+    if (index <= 0) return;
+    void placeItem(filtered[index].id, filtered[index - 1].id);
+  }
+
+  function moveDown(index: number) {
+    if (index >= filtered.length - 1) return;
+    const afterNext = filtered[index + 2];
+    void placeItem(filtered[index].id, afterNext ? afterNext.id : null);
+  }
+
+  function onDragStart(id: string, event: DragEvent<HTMLButtonElement>) {
+    event.dataTransfer.setData("text/plain", id);
+    event.dataTransfer.effectAllowed = "move";
+    setDragId(id);
+  }
+
+  function onDragOverRow(id: string, event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setOverId(id);
+  }
+
+  function onDropRow(beforeId: string | null, event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const id = event.dataTransfer.getData("text/plain") || dragId;
+    setDragId(null);
+    setOverId(null);
+    if (!id) return;
+    void placeItem(id, beforeId);
+  }
+
   async function toggleFavorite(item: VaultItem) {
     try {
       await updateItem({ ...item, favorite: !item.favorite });
@@ -240,7 +299,7 @@ export default function MainScreen({
       <header className="topbar">
         <div className="brand-mini">
           <Logo />
-          <span>Keyhaven</span>
+          <span>SecureVault</span>
         </div>
         <div className="search">
           <svg className="glyph" viewBox="0 0 24 24" aria-hidden="true">
@@ -301,26 +360,79 @@ export default function MainScreen({
               <p>표시할 항목이 없습니다.</p>
             </div>
           ) : (
-            filtered.map((item) => (
-              <button
+            filtered.map((item, index) => (
+              <div
                 key={item.id}
-                className={`item-row ${item.id === selectedId ? "active" : ""}`}
-                onClick={() => {
-                  setSelectedId(item.id);
-                  if (editing === "edit" || editing === "settings") setEditing(null);
-                }}
+                className={`item-row ${item.id === selectedId ? "active" : ""} ${dragId === item.id ? "dragging" : ""} ${overId === item.id ? "drag-over" : ""}`}
+                onDragOver={(event) => onDragOverRow(item.id, event)}
+                onDrop={(event) => onDropRow(item.id, event)}
               >
-                <div className="title">
-                  <span>{item.title}</span>
-                  {item.favorite ? <span className="star">★</span> : null}
+                <button
+                  type="button"
+                  className="drag-handle"
+                  draggable
+                  aria-label="순서 바꾸기"
+                  onDragStart={(event) => onDragStart(item.id, event)}
+                  onDragEnd={() => {
+                    setDragId(null);
+                    setOverId(null);
+                  }}
+                >
+                  ⋮⋮
+                </button>
+                <button
+                  type="button"
+                  className="item-main"
+                  onClick={() => {
+                    setSelectedId(item.id);
+                    if (editing === "edit" || editing === "settings") setEditing(null);
+                  }}
+                >
+                  <div className="title">
+                    <span>{item.title}</span>
+                    {item.favorite ? <span className="star">★</span> : null}
+                  </div>
+                  <div className="meta">
+                    {typeLabel(item.itemType)} · {subtitle(item)}
+                    {item.tags && item.tags.length > 0 ? ` · ${item.tags.join(", ")}` : ""}
+                  </div>
+                </button>
+                <div className="reorder-actions">
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label="위로"
+                    disabled={index === 0}
+                    onClick={() => moveUp(index)}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="reorder-btn"
+                    aria-label="아래로"
+                    disabled={index === filtered.length - 1}
+                    onClick={() => moveDown(index)}
+                  >
+                    ↓
+                  </button>
                 </div>
-                <div className="meta">
-                  {typeLabel(item.itemType)} · {subtitle(item)}
-                  {item.tags && item.tags.length > 0 ? ` · ${item.tags.join(", ")}` : ""}
-                </div>
-              </button>
+              </div>
             ))
           )}
+          {dragId ? (
+            <div
+              className={`drop-end${overId === "end" ? " active" : ""}`}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setOverId("end");
+              }}
+              onDrop={(event) => onDropRow(null, event)}
+            >
+              맨 아래로
+            </div>
+          ) : null}
         </section>
 
         <section className="detail">
@@ -410,6 +522,9 @@ export default function MainScreen({
           </div>
         </div>
       ) : null}
+      <footer className="app-footer">
+        <BuildStamp />
+      </footer>
     </div>
   );
 }
@@ -1062,7 +1177,7 @@ function SettingsPanel({
       </form>
       <form className="card" onSubmit={handleImport}>
         <h3>가져오기</h3>
-        <p className="lede">다른 Keyhaven 금고를 병합하거나 현재 금고를 교체합니다.</p>
+        <p className="lede">다른 SecureVault 금고를 병합하거나 현재 금고를 교체합니다.</p>
         <label className="field">
           <span>가져오기 비밀번호</span>
           <input type="password" value={importPw} onChange={(e) => setImportPw(e.target.value)} />
@@ -1079,6 +1194,7 @@ function SettingsPanel({
         </button>
       </form>
       <McpSettings onToast={onToast} />
+      <BuildStamp />
     </div>
   );
 }

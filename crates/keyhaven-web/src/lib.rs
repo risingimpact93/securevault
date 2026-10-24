@@ -1,4 +1,4 @@
-//! Keyhaven web server: session-authenticated HTTP API, static UI, and `/mcp`.
+//! SecureVault web server: session-authenticated HTTP API, static UI, and `/mcp`.
 
 mod approval;
 mod routes;
@@ -433,7 +433,11 @@ impl AppState {
     }
 
     pub fn list_items(&self) -> Result<Vec<VaultItem>, VaultError> {
-        self.with_unlocked(|u| u.data.items.clone())
+        self.with_unlocked(|u| {
+            let mut items = u.data.items.clone();
+            sync::sort_items(&mut items);
+            items
+        })
     }
 
     pub fn add_item(&self, item: VaultItem) -> Result<VaultItem, VaultError> {
@@ -450,6 +454,15 @@ impl AppState {
         let device = self.inner.device_id.clone();
         let id = id.to_string();
         self.with_unlocked_mut(|u| sync::delete_item(&mut u.data, &id, &device))
+    }
+
+    pub fn move_item(&self, id: &str, before_id: Option<String>) -> Result<VaultItem, VaultError> {
+        let device = self.inner.device_id.clone();
+        let id = id.to_string();
+        self.with_unlocked_mut(move |unlocked| {
+            let before = before_id.as_deref().filter(|value| !value.is_empty());
+            sync::move_item(&mut unlocked.data, &id, before, &device)
+        })
     }
 
     pub fn change_master_password(
@@ -787,7 +800,7 @@ pub async fn serve(config: Config) -> Result<(), String> {
     let app = router(state);
     let listener = TcpListener::bind(addr).await.map_err(|e| e.to_string())?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?;
-    eprintln!("Keyhaven web listening on http://{bound}");
+    eprintln!("SecureVault web listening on http://{bound}");
     if insecure {
         eprintln!("--dev-insecure-cookie: session cookie is not marked Secure (http localhost only)");
     }

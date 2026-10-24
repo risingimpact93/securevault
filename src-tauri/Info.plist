@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSFaceIDUsageDescription</key>
-  <string>Keyhaven이 Touch ID 또는 Face ID로 금고 잠금을 해제합니다.</string>
+  <string>SecureVault이 Touch ID 또는 Face ID로 금고 잠금을 해제합니다.</string>
 </dict>
 </plist>

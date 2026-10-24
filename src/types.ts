@@ -18,6 +18,15 @@ export interface VaultItem {
   expiry?: string;
   cvv?: string;
   tags?: string[];
+  order?: string;
+  orderUpdatedAt?: string;
+  orderUpdatedBy?: string;
+  orderVersions?: Record<string, number>;
+}
+
+export interface AppBuild {
+  version: string;
+  commit: string;
 }
 
 export interface McpTokenInfo {

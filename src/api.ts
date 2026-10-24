@@ -13,6 +13,7 @@ import type {
   ConflictView,
   SettingsPatch,
   SyncStatus,
+  AppBuild,
   VaultItem,
   VaultLocationMode,
   VaultSettings,
@@ -366,6 +367,19 @@ export async function deleteItem(id: string): Promise<void> {
   await http(`/api/items/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export async function moveItem(id: string, beforeId: string | null): Promise<VaultItem> {
+  if (isTauri()) return invoke<VaultItem>("move_item", { id, beforeId });
+  return http<VaultItem>(`/api/items/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    body: JSON.stringify({ beforeId }),
+  });
+}
+
+export async function appBuild(): Promise<AppBuild> {
+  if (isTauri()) return invoke<AppBuild>("app_build");
+  return http<AppBuild>("/api/about");
+}
+
 export async function changeMasterPassword(
   currentPassword: string,
   newPassword: string,
@@ -534,14 +548,14 @@ export async function pickVaultFile(mode: VaultLocationMode): Promise<string | n
     const selected = await save({
       title: "금고 파일 위치",
       defaultPath: "vault.khv",
-      filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+      filters: [{ name: "SecureVault", extensions: ["khv"] }],
     });
     return selected;
   }
   const selected = await open({
     title: "기존 금고 열기",
     multiple: false,
-    filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+    filters: [{ name: "SecureVault", extensions: ["khv"] }],
   });
   if (Array.isArray(selected)) return selected[0] ?? null;
   return selected;
@@ -552,7 +566,7 @@ export async function pickSavePath(): Promise<string | null> {
   const selected = await save({
     title: "금고 내보내기",
     defaultPath: "vault.khv",
-    filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+    filters: [{ name: "SecureVault", extensions: ["khv"] }],
   });
   return selected;
 }
@@ -562,7 +576,7 @@ export async function pickOpenPath(): Promise<string | null> {
     const selected = await open({
       title: "금고 가져오기",
       multiple: false,
-      filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+      filters: [{ name: "SecureVault", extensions: ["khv"] }],
     });
     if (Array.isArray(selected)) return selected[0] ?? null;
     return selected;

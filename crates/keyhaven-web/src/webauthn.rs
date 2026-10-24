@@ -96,7 +96,7 @@ impl AppState {
             .map(|cred| vec![cred.passkey.cred_id().clone()]);
         let (webauthn, _origin) = self.webauthn()?;
         let (ccr, state) = webauthn
-            .start_passkey_registration(store.user_id, "keyhaven", "Keyhaven", exclude)
+            .start_passkey_registration(store.user_id, "keyhaven", "SecureVault", exclude)
             .map_err(|e| e.to_string())?;
         let mut salt = vec![0u8; vault::KEY_LEN];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
@@ -317,7 +317,7 @@ impl AppState {
         let origin = Url::parse(&origin).map_err(|_| "passkeys require http://localhost".to_string())?;
         let webauthn = WebauthnBuilder::new("localhost", &origin)
             .map_err(|e| e.to_string())?
-            .rp_name("Keyhaven")
+            .rp_name("SecureVault")
             .build()
             .map_err(|e| e.to_string())?;
         Ok((webauthn, origin))

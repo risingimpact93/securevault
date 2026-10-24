@@ -153,7 +153,7 @@ export default function SyncSettings({
       <h3>기기 간 동기화</h3>
       <p className="lede">
         암호화된 금고 파일만 선택한 경로에 둡니다. iCloud Drive 예:{" "}
-        <span className="path-note">~/Library/Mobile Documents/com~apple~CloudDocs/Keyhaven/vault.khv</span>
+        <span className="path-note">~/Library/Mobile Documents/com~apple~CloudDocs/SecureVault/vault.khv</span>
         . 잠금 상태, 키, 토큰, 세션, 패스키와 Touch ID 자료는 이 기기에 남습니다.
       </p>
       <label className="field">

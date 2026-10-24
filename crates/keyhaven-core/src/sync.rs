@@ -104,6 +104,10 @@ struct Record {
     conflicts: Vec<ItemConflict>,
     resolved: Vec<String>,
     content: ItemBody,
+    order: String,
+    order_updated_at: String,
+    order_updated_by: String,
+    order_versions: BTreeMap<String, u64>,
 }
 
 pub fn local_config_path(data_dir: &Path) -> PathBuf {
@@ -758,7 +762,9 @@ fn prune_sync_backups(dir: &Path, now: SystemTime) -> Result<(), VaultError> {
             keep.push((path, modified));
         }
     }
-    keep.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    // Newest mtime first. Equal mtimes (copied iCloud files) rank the longer
+    // timestamped name ahead of the bare `name.merged-bak` prefix.
+    keep.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
     for (path, _) in keep.into_iter().skip(SYNC_BACKUP_KEEP) {
         fs::remove_file(path)?;
     }
@@ -783,6 +789,86 @@ pub fn migrate_data(data: &mut VaultData) {
             }
         }
     }
+    migrate_orders(data);
+}
+
+fn order_device(data: &VaultData) -> String {
+    if data.device_id.trim().is_empty() {
+        LEGACY_DEVICE.to_string()
+    } else {
+        data.device_id.clone()
+    }
+}
+
+fn fill_order_meta(
+    order_updated_at: &mut String,
+    order_updated_by: &mut Option<String>,
+    order_versions: &mut BTreeMap<String, u64>,
+    device: &str,
+) {
+    if order_updated_at.is_empty() {
+        *order_updated_at = LEGACY_TIMESTAMP.to_string();
+    }
+    if order_updated_by.as_ref().map(|value| value.is_empty()).unwrap_or(true) {
+        *order_updated_by = Some(device.to_string());
+    }
+    if order_versions.is_empty() {
+        let owner = order_updated_by.clone().unwrap_or_else(|| device.to_string());
+        order_versions.insert(owner, 1);
+    }
+}
+
+/// Assign missing fractional keys in the current vector order.
+/// A second call does not reshuffle keys that are already set.
+fn migrate_item_orders(items: &mut [VaultItem], device: &str) {
+    let count = items.len();
+    for index in 0..count {
+        if items[index].order.is_empty() {
+            let before = if index == 0 {
+                None
+            } else {
+                let value = items[index - 1].order.clone();
+                if value.is_empty() { None } else { Some(value) }
+            };
+            let after = items[index + 1..]
+                .iter()
+                .find(|item| !item.order.is_empty())
+                .map(|item| item.order.clone());
+            items[index].order = crate::order::key_between(before.as_deref(), after.as_deref());
+        }
+        fill_order_meta(
+            &mut items[index].order_updated_at,
+            &mut items[index].order_updated_by,
+            &mut items[index].order_versions,
+            device,
+        );
+    }
+}
+
+fn migrate_orders(data: &mut VaultData) {
+    let device = order_device(data);
+    migrate_item_orders(&mut data.items, &device);
+    for tombstone in &mut data.tombstones {
+        if tombstone.order.is_empty() {
+            if let Some(item) = data.items.iter().find(|item| item.id == tombstone.id) {
+                tombstone.order = item.order.clone();
+                tombstone.order_updated_at = item.order_updated_at.clone();
+                tombstone.order_updated_by = item.order_updated_by.clone();
+                tombstone.order_versions = item.order_versions.clone();
+            }
+            continue;
+        }
+        fill_order_meta(
+            &mut tombstone.order_updated_at,
+            &mut tombstone.order_updated_by,
+            &mut tombstone.order_versions,
+            &device,
+        );
+    }
+}
+
+pub fn sort_items(items: &mut [VaultItem]) {
+    items.sort_by(|left, right| left.order.cmp(&right.order).then_with(|| left.id.cmp(&right.id)));
 }
 
 fn migrate_item(item: &mut VaultItem) {
@@ -847,6 +933,7 @@ fn legacy_id(item: &VaultItem) -> String {
 }
 
 pub fn insert_new(data: &mut VaultData, mut item: VaultItem, device_id: &str) -> VaultItem {
+    migrate_data(data);
     let device = device_or_default(device_id);
     if item.id.is_empty() {
         item.id = vault::new_id();
@@ -855,12 +942,26 @@ pub fn insert_new(data: &mut VaultData, mut item: VaultItem, device_id: &str) ->
     if item.created_at.is_empty() {
         item.created_at = now.clone();
     }
-    item.updated_at = now;
+    item.updated_at = now.clone();
     item.updated_by = Some(device.clone());
     item.versions.clear();
-    item.versions.insert(device, 1);
+    item.versions.insert(device.clone(), 1);
     item.conflicts.clear();
     item.resolved_conflicts.clear();
+    if item.order.is_empty() {
+        let max_order = data
+            .items
+            .iter()
+            .map(|existing| existing.order.as_str())
+            .filter(|order| !order.is_empty())
+            .max()
+            .map(str::to_string);
+        item.order = crate::order::key_between(max_order.as_deref(), None);
+        item.order_updated_at = now;
+        item.order_updated_by = Some(device.clone());
+        item.order_versions.clear();
+        item.order_versions.insert(device.clone(), 1);
+    }
     if data.tombstones.iter().any(|tombstone| tombstone.id == item.id) {
         let mut remote = VaultData::default();
         remote.items.push(item.clone());
@@ -877,6 +978,7 @@ pub fn insert_new(data: &mut VaultData, mut item: VaultItem, device_id: &str) ->
 }
 
 pub fn update_existing(data: &mut VaultData, incoming: VaultItem, device_id: &str) -> Result<VaultItem, VaultError> {
+    migrate_data(data);
     vault::validate_item_type(&incoming.item_type)?;
     let device = device_or_default(device_id);
     let Some(index) = data.items.iter().position(|item| item.id == incoming.id) else {
@@ -887,6 +989,10 @@ pub fn update_existing(data: &mut VaultData, incoming: VaultItem, device_id: &st
     if !existing.created_at.is_empty() {
         updated.created_at = existing.created_at;
     }
+    updated.order = existing.order;
+    updated.order_updated_at = existing.order_updated_at;
+    updated.order_updated_by = existing.order_updated_by;
+    updated.order_versions = existing.order_versions;
     updated.versions = existing.versions;
     updated.conflicts = existing.conflicts;
     updated.resolved_conflicts = existing.resolved_conflicts;
@@ -902,6 +1008,7 @@ pub fn update_existing(data: &mut VaultData, incoming: VaultItem, device_id: &st
 }
 
 pub fn delete_item(data: &mut VaultData, id: &str, device_id: &str) -> Result<(), VaultError> {
+    migrate_data(data);
     let device = device_or_default(device_id);
     let Some(index) = data.items.iter().position(|item| item.id == id) else {
         return Err(VaultError::ItemNotFound);
@@ -921,9 +1028,70 @@ pub fn delete_item(data: &mut VaultData, id: &str, device_id: &str) -> Result<()
         conflicts: item.conflicts.clone(),
         resolved_conflicts: item.resolved_conflicts.clone(),
         body: item.body(),
+        order: item.order,
+        order_updated_at: item.order_updated_at,
+        order_updated_by: item.order_updated_by,
+        order_versions: item.order_versions,
     };
     upsert_tombstone(data, tombstone);
     Ok(())
+}
+
+/// Place `id` immediately before `before_id` in the sorted list.
+/// `before_id` of `None` or `""` moves the item to the end.
+/// Order metadata changes; content versions and `updated_at` do not.
+pub fn move_item(
+    data: &mut VaultData,
+    id: &str,
+    before_id: Option<&str>,
+    device_id: &str,
+) -> Result<VaultItem, VaultError> {
+    migrate_data(data);
+    sort_items(&mut data.items);
+    let device = device_or_default(device_id);
+    let before_id = before_id.filter(|value| !value.is_empty());
+    let Some(from) = data.items.iter().position(|item| item.id == id) else {
+        return Err(VaultError::ItemNotFound);
+    };
+    if before_id == Some(id) {
+        return Ok(data.items[from].clone());
+    }
+    if let Some(before) = before_id {
+        if data.items.iter().all(|item| item.id != before) {
+            return Err(VaultError::ItemNotFound);
+        }
+    }
+    let dest = match before_id {
+        Some(before) => data.items.iter().position(|item| item.id == before).unwrap(),
+        None => data.items.len(),
+    };
+    if dest == from + 1 || (before_id.is_none() && from + 1 == data.items.len()) {
+        return Ok(data.items[from].clone());
+    }
+    let mut item = data.items.remove(from);
+    let dest = match before_id {
+        Some(before) => data.items.iter().position(|entry| entry.id == before).unwrap(),
+        None => data.items.len(),
+    };
+    let prev = if dest == 0 {
+        None
+    } else {
+        let value = data.items[dest - 1].order.clone();
+        if value.is_empty() { None } else { Some(value) }
+    };
+    let next = if dest >= data.items.len() {
+        None
+    } else {
+        let value = data.items[dest].order.clone();
+        if value.is_empty() { None } else { Some(value) }
+    };
+    item.order = crate::order::key_between(prev.as_deref(), next.as_deref());
+    item.order_updated_at = now_rfc3339();
+    item.order_updated_by = Some(device.clone());
+    let next_version = item.order_versions.get(&device).copied().unwrap_or(0).saturating_add(1);
+    item.order_versions.insert(device, next_version);
+    data.items.insert(dest, item.clone());
+    Ok(item)
 }
 
 fn upsert_tombstone(data: &mut VaultData, tombstone: Tombstone) {
@@ -997,6 +1165,10 @@ pub fn resolve_conflict(
     item.versions = versions;
     item.updated_at = now_rfc3339();
     item.updated_by = Some(device);
+    item.order = tombstone.order.clone();
+    item.order_updated_at = tombstone.order_updated_at.clone();
+    item.order_updated_by = tombstone.order_updated_by.clone();
+    item.order_versions = tombstone.order_versions.clone();
     item.resolved_conflicts = tombstone.resolved_conflicts;
     item.conflicts = tombstone.conflicts;
     let resolved = item.resolved_conflicts.clone();
@@ -1057,19 +1229,24 @@ pub fn content_fingerprint(data: &VaultData) -> [u8; 32] {
     let mut lines = Vec::new();
     for item in &data.items {
         lines.push(format!(
-            "i\t{}\t{}\t{}\t{}\t{}",
+            "i\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             item.id,
             item.updated_at,
             item.title,
             item.item_type,
-            item.versions.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")
+            item.versions.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
+            item.order,
+            item.order_updated_at,
         ));
         for conflict in &item.conflicts {
             lines.push(format!("c\t{}\t{}\t{}", item.id, conflict.id, conflict.updated_at));
         }
     }
     for tombstone in &data.tombstones {
-        lines.push(format!("t\t{}\t{}\t{}", tombstone.id, tombstone.updated_at, tombstone.body.title));
+        lines.push(format!(
+            "t\t{}\t{}\t{}\t{}\t{}",
+            tombstone.id, tombstone.updated_at, tombstone.body.title, tombstone.order, tombstone.order_updated_at
+        ));
         for conflict in &tombstone.conflicts {
             lines.push(format!("tc\t{}\t{}\t{}", tombstone.id, conflict.id, conflict.updated_at));
         }
@@ -1177,6 +1354,13 @@ fn record_for(data: &VaultData, id: &str) -> Option<Record> {
 }
 
 fn merge_records(left: Record, right: Record) -> Record {
+    let pick = pick_order(&left, &right);
+    let mut merged = merge_content_records(left, right);
+    apply_order(&mut merged, pick);
+    merged
+}
+
+fn merge_content_records(left: Record, right: Record) -> Record {
     if vv_dominates(&left.versions, &right.versions) {
         return absorb(left, right);
     }
@@ -1196,6 +1380,48 @@ fn merge_records(left: Record, right: Record) -> Record {
         (right, left)
     };
     keep_conflict(winner, loser)
+}
+
+struct OrderPick {
+    order: String,
+    order_updated_at: String,
+    order_updated_by: String,
+    order_versions: BTreeMap<String, u64>,
+}
+
+fn pick_order(left: &Record, right: &Record) -> OrderPick {
+    let chosen = if order_prefers_left(left, right) { left } else { right };
+    OrderPick {
+        order: chosen.order.clone(),
+        order_updated_at: chosen.order_updated_at.clone(),
+        order_updated_by: chosen.order_updated_by.clone(),
+        order_versions: vv_max(&left.order_versions, &right.order_versions),
+    }
+}
+
+/// Newer order stamp wins. Ties break by device id, then item id, then order key.
+/// The comparison is a total order, so `merge(A, B)` and `merge(B, A)` agree.
+fn order_prefers_left(left: &Record, right: &Record) -> bool {
+    match stamp_cmp(&left.order_updated_at, &right.order_updated_at) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match left.order_updated_by.cmp(&right.order_updated_by) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => match left.id.cmp(&right.id) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => left.order >= right.order,
+            },
+        },
+    }
+}
+
+fn apply_order(record: &mut Record, pick: OrderPick) {
+    record.order = pick.order;
+    record.order_updated_at = pick.order_updated_at;
+    record.order_updated_by = pick.order_updated_by;
+    record.order_versions = pick.order_versions;
 }
 
 fn keep_conflict(mut winner: Record, loser: Record) -> Record {
@@ -1289,6 +1515,10 @@ fn record_from_item(item: &VaultItem) -> Record {
         conflicts: item.conflicts.clone(),
         resolved: item.resolved_conflicts.clone(),
         content: item.body(),
+        order: item.order.clone(),
+        order_updated_at: item.order_updated_at.clone(),
+        order_updated_by: item.order_updated_by.clone().unwrap_or_default(),
+        order_versions: item.order_versions.clone(),
     }
 }
 
@@ -1302,6 +1532,10 @@ fn record_from_tombstone(tombstone: &Tombstone) -> Record {
         conflicts: tombstone.conflicts.clone(),
         resolved: tombstone.resolved_conflicts.clone(),
         content: tombstone.body.clone(),
+        order: tombstone.order.clone(),
+        order_updated_at: tombstone.order_updated_at.clone(),
+        order_updated_by: tombstone.order_updated_by.clone().unwrap_or_default(),
+        order_versions: tombstone.order_versions.clone(),
     }
 }
 
@@ -1318,6 +1552,14 @@ fn item_from_record(record: &Record) -> VaultItem {
     item.versions = record.versions.clone();
     item.conflicts = record.conflicts.clone();
     item.resolved_conflicts = record.resolved.clone();
+    item.order = record.order.clone();
+    item.order_updated_at = record.order_updated_at.clone();
+    item.order_updated_by = if record.order_updated_by.is_empty() {
+        None
+    } else {
+        Some(record.order_updated_by.clone())
+    };
+    item.order_versions = record.order_versions.clone();
     item
 }
 
@@ -1334,6 +1576,14 @@ fn tombstone_from_record(record: &Record) -> Tombstone {
         conflicts: record.conflicts.clone(),
         resolved_conflicts: record.resolved.clone(),
         body: record.content.clone(),
+        order: record.order.clone(),
+        order_updated_at: record.order_updated_at.clone(),
+        order_updated_by: if record.order_updated_by.is_empty() {
+            None
+        } else {
+            Some(record.order_updated_by.clone())
+        },
+        order_versions: record.order_versions.clone(),
     }
 }
 
@@ -1590,6 +1840,7 @@ mod tests {
             conflicts: Vec::new(),
             resolved_conflicts: Vec::new(),
             body: item.body(),
+            ..Tombstone::default()
         });
         let mut older = VaultData::default();
         older.items.push(item.clone());
@@ -1615,6 +1866,7 @@ mod tests {
             conflicts: Vec::new(),
             resolved_conflicts: Vec::new(),
             body: item.body(),
+            ..Tombstone::default()
         });
         merge_vault(&mut edit, &deletion);
         assert!(edit.items.is_empty(), "a concurrent edit must not revive a delete");
@@ -1825,6 +2077,10 @@ mod tests {
             conflicts: Vec::new(),
             resolved_conflicts: Vec::new(),
             body: item.body(),
+            order: item.order.clone(),
+            order_updated_at: item.order_updated_at.clone(),
+            order_updated_by: item.order_updated_by.clone(),
+            order_versions: item.order_versions.clone(),
         }
     }
 
@@ -2073,5 +2329,285 @@ mod tests {
         assert!(backup_names.iter().all(|name| !name.starts_with("old-")));
         assert!(backup_names.iter().all(|name| !name.contains("conflict")));
         assert!(backup_names.iter().all(|name| name.contains("merged-bak")));
+    }
+
+    #[test]
+    fn backup_prune_ranks_by_mtime_not_name() {
+        let now = SystemTime::now();
+        let dir = tempfile::tempdir().unwrap();
+        let bare = dir.path().join("vault 2.khv.merged-bak");
+        fs::write(&bare, b"bare").unwrap();
+        set_mtime(&bare, now.checked_sub(Duration::from_secs(24 * 3600)).unwrap());
+        for index in 0..5 {
+            let path = dir.path().join(format!("aaa-{index:02}.khv.merged-bak"));
+            fs::write(&path, b"old-name").unwrap();
+            set_mtime(
+                &path,
+                now.checked_sub(Duration::from_secs(20 * 3600 + index as u64 * 60)).unwrap(),
+            );
+        }
+        for index in 0..10 {
+            let path = dir.path().join(format!("zzz-{index:02}.khv.merged-bak.{index}"));
+            fs::write(&path, b"new").unwrap();
+            set_mtime(&path, now.checked_sub(Duration::from_secs(120 + index as u64 * 60)).unwrap());
+        }
+        prune_sync_backups(dir.path(), now).unwrap();
+        let kept = file_names(dir.path());
+        assert_eq!(kept.len(), SYNC_BACKUP_KEEP, "{kept:?}");
+        assert!(kept.iter().all(|name| name.starts_with("zzz-")), "{kept:?}");
+        assert!(kept.iter().all(|name| !name.contains("vault 2")));
+        assert!(kept.iter().all(|name| !name.starts_with("aaa-")));
+    }
+
+    #[test]
+    fn backup_prune_equal_mtime_drops_untimestamped_prefix() {
+        let now = SystemTime::now();
+        let when = now.checked_sub(Duration::from_secs(3600)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let bare = dir.path().join("vault 2.khv.merged-bak");
+        fs::write(&bare, b"bare").unwrap();
+        set_mtime(&bare, when);
+        for index in 0..10 {
+            let path = dir.path().join(format!("vault 2.khv.merged-bak.{index:04}"));
+            fs::write(&path, b"stamped").unwrap();
+            set_mtime(&path, when);
+        }
+        prune_sync_backups(dir.path(), now).unwrap();
+        let kept = file_names(dir.path());
+        assert_eq!(kept.len(), SYNC_BACKUP_KEEP, "{kept:?}");
+        assert!(kept.iter().all(|name| name != "vault 2.khv.merged-bak"), "{kept:?}");
+        assert!(kept.iter().all(|name| name.contains("merged-bak.")));
+    }
+
+    fn set_order(item: &mut VaultItem, order: &str, at: &str, device: &str, version: u64) {
+        item.order = order.to_string();
+        item.order_updated_at = at.to_string();
+        item.order_updated_by = Some(device.to_string());
+        item.order_versions = versions(&[(device, version)]);
+    }
+
+    fn ordered_pair() -> VaultData {
+        let mut data = VaultData::default();
+        data.items.push(live_item(
+            "a",
+            "A",
+            "2026-01-01T00:00:00Z",
+            "device-a",
+            &[("device-a", 1)],
+        ));
+        data.items.push(live_item(
+            "b",
+            "B",
+            "2026-01-01T00:00:00Z",
+            "device-a",
+            &[("device-a", 1)],
+        ));
+        set_order(&mut data.items[0], "a0", "2026-03-01T00:00:00Z", "device-a", 1);
+        set_order(&mut data.items[1], "a1", "2026-03-01T00:00:00Z", "device-a", 1);
+        data
+    }
+
+    #[test]
+    fn order_merge_concurrent_reorders_and_content_edit() {
+        let base = ordered_pair();
+        let mut left = base.clone();
+        let mut right = base.clone();
+        set_order(&mut left.items[0], "a2", "2026-04-02T00:00:00Z", "device-a", 2);
+        set_order(&mut left.items[1], "a0", "2026-04-01T00:00:00Z", "device-a", 2);
+        set_order(&mut right.items[0], "a0", "2026-04-01T00:00:00Z", "device-b", 1);
+        set_order(&mut right.items[1], "a3", "2026-05-01T00:00:00Z", "device-b", 3);
+
+        let mut merged = left.clone();
+        merge_vault(&mut merged, &right);
+        let mut flipped = right.clone();
+        merge_vault(&mut flipped, &left);
+        for result in [&merged, &flipped] {
+            let a = result.items.iter().find(|item| item.id == "a").unwrap();
+            let b = result.items.iter().find(|item| item.id == "b").unwrap();
+            assert_eq!(a.order, "a2", "newer order on a wins");
+            assert_eq!(b.order, "a3", "newer order on b wins");
+            assert_eq!(a.title, "A");
+            assert_eq!(b.title, "B");
+            assert!(a.conflicts.is_empty());
+            assert_eq!(a.order_versions.get("device-a"), Some(&2));
+            assert_eq!(a.order_versions.get("device-b"), Some(&1));
+            assert_eq!(b.order_versions.get("device-b"), Some(&3));
+            assert_eq!(a.order_updated_by.as_deref(), Some("device-a"));
+            assert_eq!(b.order_updated_by.as_deref(), Some("device-b"));
+        }
+
+        let mut edited = base.clone();
+        edited.items[0].title = "Edited".to_string();
+        edited.items[0].password = Some("edited-secret".to_string());
+        edited.items[0].updated_at = "2026-06-01T00:00:00Z".to_string();
+        edited.items[0].updated_by = Some("device-a".to_string());
+        edited.items[0].versions = versions(&[("device-a", 2)]);
+        let mut reordered = base.clone();
+        set_order(&mut reordered.items[0], "a2", "2026-07-01T00:00:00Z", "device-b", 1);
+        set_order(&mut reordered.items[1], "a0", "2026-07-01T00:00:00Z", "device-b", 1);
+        let mut both = edited.clone();
+        merge_vault(&mut both, &reordered);
+        let mut back = reordered.clone();
+        merge_vault(&mut back, &edited);
+        for result in [&both, &back] {
+            let a = result.items.iter().find(|item| item.id == "a").unwrap();
+            assert_eq!(a.title, "Edited");
+            assert_eq!(a.password.as_deref(), Some("edited-secret"));
+            assert_eq!(a.order, "a2");
+            assert!(a.conflicts.is_empty(), "an order-only change is not a content conflict");
+            assert_eq!(a.versions.get("device-a"), Some(&2));
+            assert_eq!(a.order_updated_by.as_deref(), Some("device-b"));
+        }
+    }
+
+    #[test]
+    fn order_tie_break_is_symmetric() {
+        let mut left = VaultData::default();
+        left.items.push(live_item(
+            "item",
+            "Same",
+            "2026-01-01T00:00:00Z",
+            "device-a",
+            &[("device-a", 1)],
+        ));
+        set_order(&mut left.items[0], "a0", "2026-08-01T00:00:00Z", "device-a", 1);
+        let mut right = left.clone();
+        right.items[0].updated_by = Some("device-b".to_string());
+        right.items[0].versions = versions(&[("device-b", 1)]);
+        set_order(&mut right.items[0], "a1", "2026-08-01T00:00:00Z", "device-b", 1);
+
+        let mut forward = left.clone();
+        merge_vault(&mut forward, &right);
+        let mut backward = right.clone();
+        merge_vault(&mut backward, &left);
+        assert_eq!(forward.items[0].order, "a1");
+        assert_eq!(backward.items[0].order, "a1");
+        assert_eq!(forward.items[0].order_updated_by.as_deref(), Some("device-b"));
+        assert_eq!(backward.items[0].order_updated_by.as_deref(), Some("device-b"));
+        assert_eq!(forward.items[0].title, "Same");
+        assert!(forward.items[0].conflicts.is_empty());
+
+        let mut low = left.clone();
+        set_order(&mut low.items[0], "a0", "2026-08-01T00:00:00Z", "device-a", 1);
+        let mut high = left.clone();
+        set_order(&mut high.items[0], "a2", "2026-08-01T00:00:00Z", "device-a", 4);
+        let mut one = low.clone();
+        merge_vault(&mut one, &high);
+        let mut two = high.clone();
+        merge_vault(&mut two, &low);
+        assert_eq!(one.items[0].order, "a2");
+        assert_eq!(two.items[0].order, "a2");
+        assert_eq!(one.items[0].order_versions.get("device-a"), Some(&4));
+
+        let mut first = record_from_item(&low.items[0]);
+        let mut second = first.clone();
+        first.id = "aaa".to_string();
+        first.order = "a0".to_string();
+        second.id = "zzz".to_string();
+        second.order = "a9".to_string();
+        let ab = merge_records(first.clone(), second.clone());
+        let ba = merge_records(second, first);
+        assert_eq!(ab.order, "a9");
+        assert_eq!(ba.order, "a9");
+    }
+
+    #[test]
+    fn order_migration_preserves_current_order() {
+        let raw = r#"{"items":[{"id":"b","itemType":"note","title":"B","favorite":false},{"id":"a","itemType":"note","title":"A","favorite":false}]}"#;
+        let mut data: VaultData = serde_json::from_str(raw).unwrap();
+        assert!(data.items.iter().all(|item| item.order.is_empty()));
+        migrate_data(&mut data);
+        assert_eq!(data.items[0].id, "b");
+        assert_eq!(data.items[1].id, "a");
+        assert!(data.items[0].order < data.items[1].order);
+        assert_eq!(data.items[0].order_updated_at, LEGACY_TIMESTAMP);
+        assert_eq!(data.items[0].order_updated_by.as_deref(), Some(LEGACY_DEVICE));
+        assert_eq!(data.items[0].order_versions.get(LEGACY_DEVICE), Some(&1));
+        let keys: Vec<_> = data.items.iter().map(|item| item.order.clone()).collect();
+        migrate_data(&mut data);
+        let again: Vec<_> = data.items.iter().map(|item| item.order.clone()).collect();
+        assert_eq!(keys, again);
+        let mut sorted = data.items.clone();
+        sort_items(&mut sorted);
+        assert_eq!(sorted.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+
+        data.items.insert(
+            1,
+            live_item("m", "M", "2026-01-01T00:00:00Z", "device-a", &[("device-a", 1)]),
+        );
+        data.items[1].order.clear();
+        data.items[1].order_updated_at.clear();
+        data.items[1].order_updated_by = None;
+        data.items[1].order_versions.clear();
+        let low = data.items[0].order.clone();
+        let high = data.items[2].order.clone();
+        migrate_data(&mut data);
+        assert!(data.items[1].order.as_str() > low.as_str(), "{}", data.items[1].order);
+        assert!(data.items[1].order.as_str() < high.as_str(), "{}", data.items[1].order);
+        let middle = data.items[1].order.clone();
+        migrate_data(&mut data);
+        assert_eq!(data.items[1].order, middle);
+    }
+
+    #[test]
+    fn move_item_reorders_without_touching_content() {
+        let mut data = VaultData::default();
+        data.device_id = "device-a".to_string();
+        data.items.push(live_item("a", "A", "2026-01-01T00:00:00Z", "device-a", &[("device-a", 1)]));
+        data.items.push(live_item("b", "B", "2026-01-01T00:00:00Z", "device-a", &[("device-a", 1)]));
+        data.items.push(live_item("c", "C", "2026-01-01T00:00:00Z", "device-a", &[("device-a", 1)]));
+        migrate_data(&mut data);
+        let key_a = data.items[0].order.clone();
+        let versions = data.items[0].versions.clone();
+        let updated_at = data.items[0].updated_at.clone();
+
+        let stayed = move_item(&mut data, "a", Some("b"), "device-a").unwrap();
+        assert_eq!(stayed.order, key_a);
+        assert_eq!(stayed.versions, versions);
+        assert_eq!(stayed.updated_at, updated_at);
+        assert_eq!(stayed.title, "A");
+        assert_eq!(move_item(&mut data, "a", Some("a"), "device-a").unwrap().order, key_a);
+
+        let moved = move_item(&mut data, "c", Some("a"), "device-a").unwrap();
+        assert!(moved.order.as_str() < key_a.as_str(), "{}", moved.order);
+        assert_eq!(moved.title, "C");
+        assert_eq!(moved.versions.get("device-a"), Some(&1));
+        assert_eq!(moved.updated_at, "2026-01-01T00:00:00Z");
+        assert!(moved.order_versions.get("device-a").copied().unwrap() >= 1);
+        sort_items(&mut data.items);
+        assert_eq!(data.items[0].id, "c");
+
+        let ended = move_item(&mut data, "c", None, "device-a").unwrap();
+        sort_items(&mut data.items);
+        assert_eq!(data.items.last().unwrap().id, "c");
+        assert!(ended.order.as_str() > data.items[data.items.len() - 2].order.as_str());
+        let again = move_item(&mut data, "c", Some(""), "device-a").unwrap();
+        assert_eq!(again.order, ended.order);
+        assert!(matches!(
+            move_item(&mut data, "missing", Some("a"), "device-a"),
+            Err(VaultError::ItemNotFound)
+        ));
+    }
+
+    #[test]
+    fn update_existing_ignores_client_order() {
+        let mut data = VaultData::default();
+        data.items.push(live_item("a", "A", "2026-01-01T00:00:00Z", "device-a", &[("device-a", 1)]));
+        migrate_data(&mut data);
+        set_order(&mut data.items[0], "a0", "2026-02-01T00:00:00Z", "device-a", 3);
+        let mut incoming = data.items[0].clone();
+        incoming.title = "Changed".to_string();
+        incoming.order = "zzz".to_string();
+        incoming.order_updated_at = "2026-09-01T00:00:00Z".to_string();
+        incoming.order_updated_by = Some("device-b".to_string());
+        let updated = update_existing(&mut data, incoming, "device-b").unwrap();
+        assert_eq!(updated.title, "Changed");
+        assert_eq!(updated.order, "a0");
+        assert_eq!(updated.order_updated_at, "2026-02-01T00:00:00Z");
+        assert_eq!(updated.order_updated_by.as_deref(), Some("device-a"));
+        assert_eq!(updated.order_versions.get("device-a"), Some(&3));
+        assert!(updated.order_versions.get("device-b").is_none());
+        assert_eq!(updated.versions.get("device-b"), Some(&1));
+        assert_eq!(updated.versions.get(LEGACY_DEVICE), None);
     }
 }

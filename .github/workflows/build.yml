@@ -52,6 +52,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           args: --target aarch64-apple-darwin --bundles app,dmg
+      # productName sets the DMG filename (SecureVault_0.2.0_aarch64.dmg). The glob tracks it.
       - uses: actions/upload-artifact@v4
         with:
           name: keyhaven-macos-arm64-dmg

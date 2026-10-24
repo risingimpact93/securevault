@@ -132,8 +132,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/lock", post(lock))
         .route("/api/is-unlocked", get(is_unlocked))
         .route("/api/session", get(session))
+        .route("/api/about", get(about))
         .route("/api/items", get(list_items).post(add_item).put(update_item))
         .route("/api/items/{id}", delete(delete_item))
+        .route("/api/items/{id}/move", post(move_item))
         .route("/api/change-master-password", post(change_master_password))
         .route("/api/generate-password", post(generate_password))
         .route("/api/export-vault", post(export_vault))
@@ -274,6 +276,20 @@ async fn is_unlocked(State(state): State<AppState>, headers: HeaderMap) -> impl 
     Json(unlocked)
 }
 
+async fn about() -> impl IntoResponse {
+    Json(json!({
+        "version": keyhaven_core::VERSION,
+        "commit": keyhaven_core::GIT_COMMIT,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveBody {
+    #[serde(default)]
+    before_id: Option<String>,
+}
+
 async fn list_items(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(resp) = state.require_unlocked_session(&headers, false) {
         return resp;
@@ -344,6 +360,21 @@ async fn delete_item(
     }
     match state.delete_item(&id) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn move_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.move_item(&id, body.before_id) {
+        Ok(item) => Json(item).into_response(),
         Err(err) => vault_error(err),
     }
 }

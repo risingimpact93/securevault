@@ -3,7 +3,7 @@ name = "keyhaven-web"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Keyhaven web server"
+description = "SecureVault web server"
 license = "MIT"
 
 [dependencies]

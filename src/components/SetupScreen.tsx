@@ -1,4 +1,5 @@
 import { FormEvent, useMemo, useState } from "react";
+import BuildStamp from "./BuildStamp";
 import Logo from "./Logo";
 
 function scorePassword(pw: string): { score: number; label: string } {
@@ -54,7 +55,7 @@ export default function SetupScreen({
         <div className="brand-row">
           <Logo />
           <div>
-            <h1 className="brand-name">Keyhaven</h1>
+            <h1 className="brand-name">SecureVault</h1>
             <p className="brand-tag">열쇠가 머무는 안식처</p>
           </div>
         </div>
@@ -91,6 +92,7 @@ export default function SetupScreen({
         <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: "100%" }}>
           {busy ? "금고 생성 중…" : "금고 만들기"}
         </button>
+        <BuildStamp />
       </form>
     </div>
   );

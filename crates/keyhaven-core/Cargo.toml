@@ -3,7 +3,7 @@ name = "keyhaven-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Shared Keyhaven vault crypto, file format, and MCP tool logic"
+description = "Shared SecureVault vault crypto, file format, and MCP tool logic"
 license = "MIT"
 
 [features]

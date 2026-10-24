@@ -104,7 +104,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 fn print_help() {
     eprintln!(
         "\
-Keyhaven web server
+SecureVault web server
 
 USAGE:
     keyhaven-web [OPTIONS]

@@ -1,7 +1,7 @@
 [package]
 name = "keyhaven"
 version.workspace = true
-description = "Keyhaven password manager"
+description = "SecureVault password manager"
 authors = ["Keyhaven"]
 edition.workspace = true
 rust-version.workspace = true

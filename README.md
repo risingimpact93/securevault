@@ -1,10 +1,10 @@
-# Keyhaven — 로컬 비밀번호 관리자
+# SecureVault — 로컬 비밀번호 관리자
 
-Keyhaven은 내 기기에만 저장되는 암호화 비밀번호 관리 앱입니다 (Tauri 2 데스크톱 + Axum 웹 + React + Rust).
+SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱입니다 (Tauri 2 데스크톱 + Axum 웹 + React + Rust). 번들 식별자는 `com.keyhaven.app`이고, 금고 파일 이름과 앱 데이터 경로는 그대로입니다.
 
 ## 기능
 - 마스터 비밀번호로 금고 생성 / 잠금 해제 / 잠금, 마스터 비밀번호 변경
-- 항목: 로그인, 보안 메모, 카드 — 추가·수정·삭제·검색·즐겨찾기
+- 항목: 로그인, 보안 메모, 카드 — 추가·수정·삭제·검색·즐겨찾기. 목록은 끌어 옮기거나 위/아래 버튼으로 순서를 바꿉니다. 순서는 항목마다 금고에 저장되고 내용과 따로 병합됩니다
 - 비밀번호 생성기 (길이 4~128, 대문자/소문자/숫자/기호 선택)
 - 클립보드 복사 후 30초 뒤 자동 삭제 (그 사이 다른 걸 복사했으면 건드리지 않음)
 - 마우스·키보드·터치가 없으면 자동 잠금. 선택: 1분, 2분, 5분, 10분, 30분, 1시간 (기본 1분). 값은 암호화된 금고 안에 저장되어 데스크톱과 웹이 같은 설정을 씁니다
@@ -35,10 +35,10 @@ Keyhaven은 내 기기에만 저장되는 암호화 비밀번호 관리 앱입�
    ```
 5. 바로 실행해 보기 (개발 모드): `npm run tauri dev`
 6. 앱 만들기: `npm run tauri build`
-   - 결과물: `src-tauri/target/release/bundle/macos/Keyhaven.app` 와 `bundle/dmg/Keyhaven_*.dmg`
-   - `Keyhaven.app`을 `응용 프로그램` 폴더로 옮기면 됩니다.
+   - 결과물: `src-tauri/target/release/bundle/macos/SecureVault.app` 와 `bundle/dmg/SecureVault_*.dmg`
+   - `SecureVault.app`을 `응용 프로그램` 폴더로 옮기면 됩니다.
 7. 서명이 없는 앱이라 처음 열 때 "확인되지 않은 개발자" 경고가 나오면: Finder에서 앱을 우클릭 → 열기, 또는
-   `xattr -dr com.apple.quarantine /Applications/Keyhaven.app`
+   `xattr -dr com.apple.quarantine /Applications/SecureVault.app`
 
 ## macOS 빌드 주의사항
 
@@ -66,12 +66,12 @@ npm run build
 
 ## MCP 연결 (외부 에이전트에서 금고 사용)
 
-Keyhaven 앱 안에 로컬 MCP 서버가 들어 있어서 Grok Bot이나 Claude Desktop 같은 에이전트가 금고를 검색할 수 있습니다.
+SecureVault 앱 안에 로컬 MCP 서버가 들어 있어서 Grok Bot이나 Claude Desktop 같은 에이전트가 금고를 검색할 수 있습니다.
 
 ### 동작 방식
 - 주소: `http://127.0.0.1:47821/mcp` (Streamable HTTP, 이 맥 안에서만 접속 가능, 포트는 설정에서 변경)
 - 기본은 꺼져 있습니다. 설정 → **MCP 연결**에서 "MCP 서버 사용"을 켜고 적용하세요.
-- 금고가 **잠겨 있으면** 모든 도구 호출이 `Keyhaven vault is locked` 오류로 거부됩니다.
+- 금고가 **잠겨 있으면** 모든 도구 호출이 `SecureVault vault is locked` 오류로 거부됩니다.
 - 인증: 설정 → **접근 토큰**에서 이름을 넣고 토큰을 발급합니다. 토큰은 **발급 직후 한 번만** 보이니 바로 복사하세요. 앱에는 SHA-256 해시만 저장되고, 폐기하면 즉시 401로 거부됩니다.
 - **접근 기록**: 시각, 토큰 이름, 도구, 항목 ID, 허용/거부, 사유 (최근 1000건). 비밀 값과 검색어는 기록하지 않습니다.
 
@@ -145,14 +145,14 @@ MCP는 같은 서버의 `http://127.0.0.1:8787/mcp`입니다. 설정에서 MCP�
 
 ### iPhone / iPad에서 HTTPS로 쓰기
 
-Safari는 보안 쿠키와 클립보드 등에 HTTPS(또는 http localhost)를 요구하는 경우가 많습니다. **이 저장소는 터널을 열거나 외부에 노출하지 않습니다.** 아래는 직접 구성할 때의 선택지입니다. 어떤 경우든 Keyhaven 프로세스는 `127.0.0.1`에만 두고, 앞단에서 TLS를 종료하세요.
+Safari는 보안 쿠키와 클립보드 등에 HTTPS(또는 http localhost)를 요구하는 경우가 많습니다. **이 저장소는 터널을 열거나 외부에 노출하지 않습니다.** 아래는 직접 구성할 때의 선택지입니다. 어떤 경우든 SecureVault 프로세스는 `127.0.0.1`에만 두고, 앞단에서 TLS를 종료하세요.
 
 | 방법 | 누가 닿나 | 인증 | 암호화 | 위험 / 비고 |
 |---|---|---|---|---|
 | **Tailscale Serve** | 같은 Tailnet 기기 (내 아이폰 포함) | Tailscale 노드 신원 | HTTPS (Tailscale 인증서) | 가장 단순. 인터넷 전체에 열리지 않음. 아이폰에 Tailscale 앱 필요 |
 | **Tailscale Funnel** | 인터넷의 아무나 (URL을 아는 사람) | Funnel 공개 HTTPS | HTTPS | **권장하지 않음.** 마스터 비밀번호 추측·토큰 유출 면적이 커짐. 꼭 쓸 경우 강력한 마스터 비밀번호 + MCP 끄기 |
 | **Cloudflare Tunnel + Access** | Access 정책에 통과한 사람 | Cloudflare Access (이메일 OTP, IdP 등) | HTTPS | 제로트러스트 앞단. 본인만 허용하는 Access 앱을 반드시 켤 것. 터널만 열고 Access를 끄면 Funnel과 비슷하게 공개됨 |
-| **VPS + Let's Encrypt** | 그 서버/리버스 프록시에 닿는 사람 | 보통 nginx/Caddy 기본 인증 또는 VPN | Let's Encrypt HTTPS | Keyhaven은 루프백에만 바인드하고 Caddy/nginx가 TLS 종료. 방화벽으로 22/443만, 가능하면 VPN 뒤에서만 |
+| **VPS + Let's Encrypt** | 그 서버/리버스 프록시에 닿는 사람 | 보통 nginx/Caddy 기본 인증 또는 VPN | Let's Encrypt HTTPS | SecureVault는 루프백에만 바인드하고 Caddy/nginx가 TLS 종료. 방화벽으로 22/443만, 가능하면 VPN 뒤에서만 |
 
 권장 순서: 같은 사람 기기만이면 **Tailscale Serve**. 계정 단위 정책이 필요하면 **Cloudflare Tunnel + Access**. 공인 IP 서버를 이미 운영할 때만 VPS. Funnel이나 인증 없는 공개 터널은 비밀번호 관리자에 맞지 않습니다.
 
@@ -166,9 +166,9 @@ iPhone/iPad 팁:
 여러 Mac(또는 같은 파일을 보는 웹 서버)이 하나의 암호화된 `vault.khv`를 나눠 쓸 수 있습니다. 브라우저 자동 입력은 없습니다.
 
 ### 준비
-1. 한 기기에서 금고를 연 뒤 설정 → 기기 간 동기화에서 경로를 지정합니다. 예: `~/Library/Mobile Documents/com~apple~CloudDocs/Keyhaven/vault.khv`
+1. 한 기기에서 금고를 연 뒤 설정 → 기기 간 동기화에서 경로를 지정합니다. 예: `~/Library/Mobile Documents/com~apple~CloudDocs/SecureVault/vault.khv`
 2. **이 경로로 옮기기**는 현재 금고 파일을 그 위치로 옮깁니다. 선택한 경로에는 암호문 파일만 있습니다.
-3. 다른 Mac의 Keyhaven에서 **이 경로 열기**로 같은 파일을 지정합니다. iCloud가 파일을 아직 받지 못했으면 "iCloud에서 내려받는 중"으로 표시하고, macOS에서는 `brctl download`로 받기를 요청합니다. 다른 운영체제에서는 기다리기만 합니다.
+3. 다른 Mac의 SecureVault에서 **이 경로 열기**로 같은 파일을 지정합니다. iCloud가 파일을 아직 받지 못했으면 "iCloud에서 내려받는 중"으로 표시하고, macOS에서는 `brctl download`로 받기를 요청합니다. 다른 운영체제에서는 기다리기만 합니다.
 4. 웹 UI는 서버 파일 시스템을 고를 수 없으므로 절대 경로를 직접 입력합니다.
 5. 잠금 상태, 세션, MCP 토큰, 패스키(`webauthn.json`), Touch ID 키체인 항목은 각 기기의 앱 데이터 폴더에 남습니다. 기기마다 기기 id가 `keyhaven-config.json`에 저장되며 이 파일은 금고 안에 넣지 않습니다.
 
@@ -176,8 +176,9 @@ iPhone/iPad 팁:
 - 금고에는 수정 횟수(revision)와 마지막으로 저장한 기기 id가 있습니다. 각 항목에는 id, `updated_at`, 기기별 버전 벡터가 있습니다.
 - 저장하기 전에 디스크의 파일이 마지막으로 읽은 것과 다르면(해시, nonce, revision) 그 파일을 풀어 항목마다 병합한 뒤 저장합니다. 잠금이 풀려 있는 동안 몇 초마다 파일 시각과 해시를 다시 보고, 바뀌었으면 같은 방식으로 합칩니다. 화면은 동기화 상태를 주기적으로 읽어 항목 목록을 새로고칩니다.
 - 한 쪽 버전 벡터가 다른 쪽을 포함하면 그 쪽이 이깁니다(원인 있는 변경). 둘 다 살아 있고 서로 포함하지 않으면 `updated_at`이 늦은 쪽이 이기고, 시각이 같으면 기기 id가 큰 쪽이 이깁니다.
+- 항목 순서는 내용과 따로 병합합니다. 각 항목은 순서 키, `orderUpdatedAt`, 순서 버전(기기 id와 카운터)을 가집니다. 순서 변경 시각이 더 늦은 쪽이 이기고, 시각이 같으면 기기 id가 큰 쪽, 그래도 같으면 항목 id가 큰 쪽이 이깁니다. 목록은 순서 키, 그다음 항목 id로 정렬합니다. 순서 키가 없는 예전 금고는 현재 순서로 키를 채웁니다.
 - 삭제와 편집이 겹치고 편집이 삭제보다 원인적으로 나중이 아니면 삭제가 이깁니다. 동시에 고친 내용은 충돌 목록에 남습니다. 그 버전을 복원하면 이 기기의 버전 번호를 올려 삭제를 이기고, 이후 어느 쪽으로 합쳐도 살아 있습니다. 삭제를 반영한 뒤의 수정은 항목을 다시 살립니다.
-- 같은 폴더의 `vault 2.khv`, `vault (conflict).khv`처럼 갈라진 충돌 파일은 합친 뒤 동기화 폴더 밖으로 옮깁니다. 백업은 앱 데이터 폴더의 `sync-backups`(웹은 서버의 로컬 데이터 폴더)에 두고, 최근 10개만 유지하며 7일이 지난 파일은 지웁니다. 비밀번호가 달라 아직 합치지 못한 파일은 옮기거나 지우지 않습니다.
+- 같은 폴더의 `vault 2.khv`, `vault (conflict).khv`처럼 갈라진 충돌 파일은 합친 뒤 동기화 폴더 밖으로 옮깁니다. 백업은 앱 데이터 폴더의 `sync-backups`(웹은 서버의 로컬 데이터 폴더)에 두고, 수정 시각이 가장 최근인 10개만 유지하며 7일이 지난 파일은 지웁니다. 비밀번호가 달라 아직 합치지 못한 파일은 옮기거나 지우지 않습니다.
 
 ### 충돌
 - 동시에 고친 항목은 이긴 쪽을 남기고, 진 쪽을 그 항목의 충돌 목록에 보관합니다. 삭제된 항목의 충돌도 같은 목록에서 보고 복원할 수 있습니다. 데이터를 조용히 버리지 않습니다.
@@ -197,7 +198,7 @@ iPhone/iPad 팁:
 `.github/workflows/build.yml`은 푸시와 수동 실행(workflow_dispatch)에서 돌아요.
 
 - **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `keyhaven-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
-- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `keyhaven-macos-arm64-dmg` artifact로 올려요.
+- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `keyhaven-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.2.0_aarch64.dmg`입니다.
 
 ### 서명 켜는 법
 저장소 Settings → Secrets and variables → Actions에 `APPLE_CERTIFICATE`(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`(앱 전용 암호), `APPLE_TEAM_ID`를 넣으면 다음 실행부터 서명·공증 단계가 자동으로 켜져요.

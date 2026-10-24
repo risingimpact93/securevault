@@ -288,7 +288,43 @@ fn is_unlocked(state: State<AppState>) -> Result<bool, String> {
 fn list_items(state: State<AppState>) -> Result<Vec<VaultItem>, String> {
     let guard = require_unlocked(&state)?;
     let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
-    Ok(unlocked.data.items.clone())
+    let mut items = unlocked.data.items.clone();
+    sync::sort_items(&mut items);
+    Ok(items)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppBuild {
+    version: String,
+    commit: String,
+}
+
+#[tauri::command]
+fn app_build() -> AppBuild {
+    AppBuild {
+        version: keyhaven_core::VERSION.to_string(),
+        commit: keyhaven_core::GIT_COMMIT.to_string(),
+    }
+}
+
+#[tauri::command]
+fn move_item(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    before_id: Option<String>,
+) -> Result<VaultItem, String> {
+    let path = vault_path(&app)?;
+    let device = device_id(&app)?;
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
+    let before = before_id.as_deref().filter(|value| !value.is_empty());
+    let moved = sync::move_item(&mut unlocked.data, &id, before, &unlocked.device_id).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
+    Ok(moved)
 }
 
 #[derive(Debug, Deserialize)]
@@ -794,6 +830,8 @@ pub fn run() {
             add_item,
             update_item,
             delete_item,
+            move_item,
+            app_build,
             change_master_password,
             generate_password,
             export_vault,

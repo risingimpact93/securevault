@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { biometricStatus } from "../api";
 import type { BiometricStatus } from "../types";
+import BuildStamp from "./BuildStamp";
 import Logo from "./Logo";
 
 export default function UnlockScreen({
@@ -66,7 +67,7 @@ export default function UnlockScreen({
         <div className="brand-row">
           <Logo />
           <div>
-            <h1 className="brand-name">Keyhaven</h1>
+            <h1 className="brand-name">SecureVault</h1>
             <p className="brand-tag">금고가 잠겨 있습니다</p>
           </div>
         </div>
@@ -91,6 +92,7 @@ export default function UnlockScreen({
             {bioLabel}
           </button>
         ) : null}
+        <BuildStamp />
       </form>
     </div>
   );

@@ -631,7 +631,7 @@ impl McpService {
     }
 }
 
-const LOCKED_REASON: &str = "Keyhaven vault is locked";
+const LOCKED_REASON: &str = "SecureVault vault is locked";
 
 pub fn bind_loopback(port: u16) -> std::io::Result<(TcpListener, SocketAddr)> {
     let std_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
@@ -858,7 +858,7 @@ fn initialize_result(params: Option<&Value>) -> Value {
     json!({
         "protocolVersion": protocol_version,
         "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "Keyhaven", "version": "0.1.0"},
+        "serverInfo": {"name": "SecureVault", "version": crate::VERSION},
         "instructions": "Metadata tools never return passwords, card numbers, CVV, or notes. get_secret requires a fresh in-app approval every call."
     })
 }
@@ -1405,7 +1405,8 @@ mod tests {
         .await;
         assert_eq!(init.0, 200);
         assert_eq!(init.1["result"]["protocolVersion"], "2025-03-26");
-        assert_eq!(init.1["result"]["serverInfo"]["name"], "Keyhaven");
+        assert_eq!(init.1["result"]["serverInfo"]["name"], "SecureVault");
+        assert_eq!(init.1["result"]["serverInfo"]["version"], crate::VERSION);
         assert_eq!(init.1["result"]["capabilities"]["tools"]["listChanged"], false);
 
         let note = http_post(
