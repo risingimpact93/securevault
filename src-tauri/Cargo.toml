@@ -1,0 +1,57 @@
+[package]
+name = "keyhaven"
+version.workspace = true
+description = "Keyhaven password manager"
+authors = ["Keyhaven"]
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "keyhaven_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+tauri-codegen = "=2.6.3"
+tauri-utils = "=2.9.3"
+
+[dependencies]
+keyhaven-core = { path = "../crates/keyhaven-core" }
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-clipboard-manager = "=2.3.2"
+tauri-plugin-dialog = "=2.3.2"
+# Keep the 2.11.5 workspace crates from unifying to later 2.x (rustc 1.90).
+tauri-macros = "=2.6.3"
+tauri-runtime = "=2.11.3"
+tauri-runtime-wry = "=2.11.4"
+tauri-utils = "=2.9.3"
+tauri-plugin = "=2.4.0"
+tauri-plugin-fs = "=2.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "=1.54.1", features = ["macros", "net", "rt-multi-thread", "sync", "time", "io-util"] }
+secrecy = "0.8"
+zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
+# Pinned to versions already resolved for rustc 1.85. Do not float these.
+bytes = "=1.12.1"
+http = "=1.5.0"
+time = "=0.3.37"
+image = { version = "=0.25.5", default-features = false }
+serde_with = "=3.12.0"
+plist = "=1.7.1"
+url = "=2.5.4"
+idna = "=1.0.3"
+idna_adapter = "=1.2.0"
+wayland-protocols = "=0.32.5"
+zbus = "=5.5.0"
+zbus_names = "=4.2.0"
+zvariant = "=5.4.0"
+zvariant_derive = "=5.4.0"
+zvariant_utils = "=3.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "=3.5.1", features = ["OSX_10_13", "OSX_10_15"] }
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", features = ["NSString", "NSError"] }
+objc2-local-authentication = { version = "=0.3.2", features = ["LAContext", "LAError"] }
+block2 = "=0.6.2"

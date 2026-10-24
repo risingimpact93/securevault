@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Keyhaven">
+  <defs>
+    <linearGradient id="shieldFill" x1="48" y1="20" x2="200" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7a64"/>
+      <stop offset="1" stop-color="#16382e"/>
+    </linearGradient>
+    <linearGradient id="goldFill" x1="96" y1="72" x2="160" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0d078"/>
+      <stop offset="1" stop-color="#c4921a"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M48 70c0-22 24-42 80-42s80 20 80 42c0 58-28 118-80 160C76 188 48 128 48 70z"
+    fill="url(#shieldFill)"
+    stroke="#c9a227"
+    stroke-width="8"
+    stroke-linejoin="round"
+  />
+  <circle cx="128" cy="104" r="26" fill="none" stroke="url(#goldFill)" stroke-width="14"/>
+  <path
+    d="M118 124h20c2 0 4 1.6 4 4.2L136 182c0 4.4-3.6 8-8 8h0c-4.4 0-8-3.6-8-8l-6-53.8c0-2.6 2-4.2 4-4.2z"
+    fill="url(#goldFill)"
+  />
+</svg>

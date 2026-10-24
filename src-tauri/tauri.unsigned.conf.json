@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "macOS": {
+      "hardenedRuntime": false,
+      "entitlements": null
+    }
+  }
+}

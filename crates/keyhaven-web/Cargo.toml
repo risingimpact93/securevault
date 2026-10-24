@@ -1,0 +1,38 @@
+[package]
+name = "keyhaven-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Keyhaven web server"
+license = "MIT"
+
+[dependencies]
+keyhaven-core = { path = "../keyhaven-core" }
+axum = { version = "0.8.4", features = ["json", "macros"] }
+tower-http = { version = "0.6.2", features = ["fs"] }
+tower = "0.5"
+tokio = { version = "=1.54.1", features = ["macros", "net", "rt-multi-thread", "sync", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+http = "=1.5.0"
+bytes = "=1.12.1"
+secrecy = "0.8"
+rand = "0.8"
+base64 = "0.22"
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+webauthn-rs = "=0.5.4"
+uuid = { version = "=1.19.0", features = ["v4", "serde"] }
+zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+keyhaven-core = { path = "../keyhaven-core", features = ["fast-kdf"] }
+tempfile = "3"
+webauthn-authenticator-rs = { version = "=0.5.4", default-features = false, features = ["softpasskey"] }
+tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+serde_json = "1"
+bytes = "=1.12.1"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.12.0", features = ["client", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "http1"] }
+base64 = "0.22"

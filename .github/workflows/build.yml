@@ -1,0 +1,59 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  linux-web:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev build-essential
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: npm ci && npm run build
+      - run: cargo test --workspace
+      - run: cargo build --release -p keyhaven-web
+      - uses: actions/upload-artifact@v4
+        with: { name: keyhaven-web-linux-x64, path: target/release/keyhaven-web }
+
+  macos-app:
+    runs-on: macos-14
+    env:
+      HAS_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-apple-darwin }
+      - uses: swatinem/rust-cache@v2
+      - run: npm ci
+      - run: cargo test --workspace
+      - name: Build (unsigned)
+        if: env.HAS_SIGNING != 'true'
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.unsigned.conf.json
+      - name: Build (signed + notarized)
+        if: env.HAS_SIGNING == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: --target aarch64-apple-darwin --bundles app,dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyhaven-macos-arm64-dmg
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
