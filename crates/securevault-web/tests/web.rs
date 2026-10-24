@@ -1118,7 +1118,10 @@ fn open_existing_vault_keeps_device_and_rejects_bad_files() {
         .await;
         assert_eq!(opened.status, 200, "{}", String::from_utf8_lossy(&opened.body));
         assert_eq!(opened.json()["state"], "ready");
-        assert_eq!(state.vault_path(), vault);
+        assert_eq!(
+            std::fs::canonicalize(state.vault_path()).unwrap(),
+            std::fs::canonicalize(&vault).unwrap()
+        );
 
         let wrong = json_req(
             port,
