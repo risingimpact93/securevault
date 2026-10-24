@@ -11,6 +11,7 @@ import {
   lock,
   mapError,
   respondMcpApproval,
+  syncStatus as fetchSyncStatus,
   touchActivity,
   unlock,
   vaultExists,
@@ -19,7 +20,7 @@ import ApprovalModal, { DEMO_APPROVAL } from "./components/ApprovalModal";
 import MainScreen from "./components/MainScreen";
 import SetupScreen from "./components/SetupScreen";
 import UnlockScreen from "./components/UnlockScreen";
-import type { ApprovalRequest, Toast, VaultItem, VaultSettings } from "./types";
+import type { ApprovalRequest, SyncStatus, Toast, VaultItem, VaultSettings } from "./types";
 import { DEFAULT_VAULT_SETTINGS } from "./types";
 
 type Screen = "loading" | "setup" | "unlock" | "main";
@@ -37,8 +38,10 @@ export default function App() {
   const [settings, setSettings] = useState<VaultSettings>(DEFAULT_VAULT_SETTINGS);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [demoDismissed, setDemoDismissed] = useState(false);
   const toastSeq = useRef(1);
+  const seenGeneration = useRef<number | null>(null);
   const idleTimer = useRef<number | null>(null);
   const lastActivityPing = useRef(0);
   const demoApproval = useMemo(() => {
@@ -175,6 +178,52 @@ export default function App() {
       window.clearInterval(poll);
     };
   }, [applyApproval, screen]);
+
+  useEffect(() => {
+    if (screen !== "main") {
+      seenGeneration.current = null;
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status = await fetchSyncStatus();
+        if (cancelled) return;
+        if (status.locked) {
+          showUnlock();
+          return;
+        }
+        setSyncStatus(status);
+        if (seenGeneration.current === null) {
+          seenGeneration.current = status.generation;
+          return;
+        }
+        if (status.generation !== seenGeneration.current) {
+          seenGeneration.current = status.generation;
+          try {
+            await reloadItems();
+          } catch {
+            return;
+          }
+          const nextSettings = await getVaultSettings().catch(() => null);
+          if (!cancelled && nextSettings) setSettings(nextSettings);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message === "vault is locked" || message === "csrf rejected") {
+          showUnlock();
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [screen, reloadItems, showUnlock]);
 
   const decideApproval = useCallback((approved: boolean) => {
     setApproval((current) => {
@@ -320,6 +369,9 @@ export default function App() {
           onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
           onSettingsChange={setSettings}
           onToast={pushToast}
+          syncStatus={syncStatus}
+          onSyncStatus={setSyncStatus}
+          onRequireUnlock={showUnlock}
         />
       ) : null}
       {approval || (demoApproval && !demoDismissed) ? (

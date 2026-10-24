@@ -292,6 +292,7 @@ impl AppState {
     fn set_biometrics_enabled(&self, enabled: bool) -> Result<(), String> {
         self.with_unlocked_mut(|unlocked| {
             unlocked.data.settings.biometrics_enabled = enabled;
+            unlocked.data.settings.touch();
             Ok(())
         })
         .map_err(|e| e.to_string())?;

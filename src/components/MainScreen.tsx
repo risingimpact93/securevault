@@ -25,12 +25,14 @@ import type {
   ItemDraft,
   ItemType,
   SettingsPatch,
+  SyncStatus,
   Toast,
   VaultItem,
   VaultSettings,
 } from "../types";
 import Logo from "./Logo";
 import McpSettings from "./McpSettings";
+import SyncSettings from "./SyncSettings";
 
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: "all", label: "전체" },
@@ -86,23 +88,37 @@ function subtitle(item: VaultItem): string {
   return item.notes?.split("\n")[0] || "메모";
 }
 
+function syncBanner(status: SyncStatus): string | null {
+  if (status.state === "waiting_icloud") return "iCloud에서 금고 파일을 내려받는 중입니다. 설정을 여세요.";
+  if (status.state === "password_required") return "다른 비밀번호가 필요한 금고 파일이 있습니다. 설정에서 합치세요.";
+  if (status.state === "error") return "동기화 중 오류가 있습니다. 설정을 여세요.";
+  if (status.conflictCount > 0) return `동기화 충돌 ${status.conflictCount}건이 있습니다. 설정에서 고르세요.`;
+  return null;
+}
+
 export default function MainScreen({
   items,
   theme,
   settings,
+  syncStatus,
   onReload,
   onLock,
   onToggleTheme,
   onSettingsChange,
+  onSyncStatus,
+  onRequireUnlock,
   onToast,
 }: {
   items: VaultItem[];
   theme: "dark" | "light";
   settings: VaultSettings;
+  syncStatus: SyncStatus | null;
   onReload: () => Promise<void>;
   onLock: () => Promise<void>;
   onToggleTheme: () => void;
   onSettingsChange: (settings: VaultSettings) => void;
+  onSyncStatus: (status: SyncStatus) => void;
+  onRequireUnlock: () => void;
   onToast: (toast: Omit<Toast, "id">) => void;
 }) {
   const [filter, setFilter] = useState<FilterId>("all");
@@ -187,7 +203,8 @@ export default function MainScreen({
       setEditing(null);
       onToast({ kind: "ok", message: "저장했습니다." });
     } catch (err) {
-      onToast({ kind: "err", message: err instanceof Error ? err.message : String(err) });
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+      await onReload().catch(() => undefined);
     }
   }
 
@@ -255,6 +272,12 @@ export default function MainScreen({
         </div>
       </header>
 
+      {syncStatus && syncBanner(syncStatus) ? (
+        <button className="sync-banner" type="button" onClick={() => setEditing("settings")}>
+          {syncBanner(syncStatus)}
+        </button>
+      ) : null}
+
       <div className={`workspace${selectedId && !editing ? " has-selection" : ""}${editing ? " editing" : ""}`}>
         <nav className="sidebar">
           {FILTERS.map((f) => (
@@ -314,7 +337,10 @@ export default function MainScreen({
           {editing === "settings" ? (
             <SettingsPanel
               settings={settings}
+              syncStatus={syncStatus}
               onSettingsChange={onSettingsChange}
+              onSyncStatus={onSyncStatus}
+              onRequireUnlock={onRequireUnlock}
               onToast={onToast}
               onReload={onReload}
             />
@@ -792,12 +818,18 @@ const AUTO_LOCK_CHOICES: { value: number; label: string }[] = [
 
 function SettingsPanel({
   settings,
+  syncStatus,
   onSettingsChange,
+  onSyncStatus,
+  onRequireUnlock,
   onToast,
   onReload,
 }: {
   settings: VaultSettings;
+  syncStatus: SyncStatus | null;
   onSettingsChange: (settings: VaultSettings) => void;
+  onSyncStatus: (status: SyncStatus) => void;
+  onRequireUnlock: () => void;
   onToast: (toast: Omit<Toast, "id">) => void;
   onReload: () => Promise<void>;
 }) {
@@ -916,8 +948,15 @@ function SettingsPanel({
     <div className="settings-grid">
       <div>
         <h2>설정</h2>
-        <p className="lede">자동 잠금, 마스터 비밀번호, MCP 연결, 내보내기/가져오기를 관리합니다.</p>
+        <p className="lede">동기화, 자동 잠금, 마스터 비밀번호, MCP 연결, 내보내기/가져오기를 관리합니다.</p>
       </div>
+      <SyncSettings
+        status={syncStatus}
+        onStatus={onSyncStatus}
+        onReload={onReload}
+        onToast={onToast}
+        onRequireUnlock={onRequireUnlock}
+      />
       <div className="card">
         <h3>자동 잠금</h3>
         <p className="lede">마우스, 키보드, 터치가 없으면 금고를 잠급니다. 이 값은 암호화된 금고에 저장됩니다.</p>

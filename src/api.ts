@@ -9,8 +9,12 @@ import type {
   IssuedMcpToken,
   ItemDraft,
   McpSettings,
+  ConflictAction,
+  ConflictView,
   SettingsPatch,
+  SyncStatus,
   VaultItem,
+  VaultLocationMode,
   VaultSettings,
 } from "./types";
 
@@ -41,6 +45,10 @@ export function mapError(message: string): string {
     "passkey session only": "패스키만으로는 잠긴 금고를 열 수 없습니다. 마스터 비밀번호를 사용하세요.",
     cancelled: "생체 인증이 취소되었습니다.",
     "passkeys require http://localhost": "패스키는 http://localhost 주소로 열어야 합니다.",
+    "vault file needs a different password": "이 금고 파일의 비밀번호가 현재 비밀번호와 다릅니다.",
+    "waiting for iCloud download": "iCloud에서 금고 파일을 내려받는 중입니다. 잠시 후 다시 시도하세요.",
+    "path must be absolute": "경로는 절대 경로여야 합니다.",
+    "mode must be move or open": "이동 또는 열기만 할 수 있습니다.",
   };
   return table[message] ?? message;
 }
@@ -474,6 +482,69 @@ export async function copyToClipboard(text: string, clearAfterSecs: number): Pro
     return;
   }
   await webCopy(text, clearAfterSecs);
+}
+
+export async function syncStatus(): Promise<SyncStatus> {
+  if (isTauri()) return invoke<SyncStatus>("sync_status");
+  return http<SyncStatus>("/api/sync/status");
+}
+
+export async function syncConflicts(): Promise<ConflictView[]> {
+  if (isTauri()) return invoke<ConflictView[]>("sync_conflicts");
+  return http<ConflictView[]>("/api/sync/conflicts");
+}
+
+export async function resolveSyncConflict(
+  itemId: string,
+  conflictId: string,
+  action: ConflictAction,
+): Promise<void> {
+  if (isTauri()) {
+    await invoke("resolve_sync_conflict", { itemId, conflictId, action });
+    return;
+  }
+  await http("/api/sync/conflicts/resolve", {
+    method: "POST",
+    body: JSON.stringify({ itemId, conflictId, action }),
+  });
+}
+
+export async function setVaultLocation(path: string, mode: VaultLocationMode): Promise<SyncStatus> {
+  if (isTauri()) return invoke<SyncStatus>("set_vault_location", { path, mode });
+  return http<SyncStatus>("/api/sync/location", {
+    method: "POST",
+    body: JSON.stringify({ path, mode }),
+  });
+}
+
+export async function mergeSyncPassword(path: string, password: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("merge_sync_password", { path, password });
+    return;
+  }
+  await http("/api/sync/merge-password", {
+    method: "POST",
+    body: JSON.stringify({ path, password }),
+  });
+}
+
+export async function pickVaultFile(mode: VaultLocationMode): Promise<string | null> {
+  if (!isTauri()) return null;
+  if (mode === "move") {
+    const selected = await save({
+      title: "금고 파일 위치",
+      defaultPath: "vault.khv",
+      filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+    });
+    return selected;
+  }
+  const selected = await open({
+    title: "기존 금고 열기",
+    multiple: false,
+    filters: [{ name: "Keyhaven", extensions: ["khv"] }],
+  });
+  if (Array.isArray(selected)) return selected[0] ?? null;
+  return selected;
 }
 
 export async function pickSavePath(): Promise<string | null> {

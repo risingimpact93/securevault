@@ -7,6 +7,7 @@ mod webauthn;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum::Router;
 use keyhaven_core::mcp::{McpService, VaultView};
+use keyhaven_core::sync::{self, ConflictView, SyncStatus};
 use keyhaven_core::vault::{self, UnlockedVault, VaultError, VaultItem};
 use secrecy::SecretString;
 use serde_json::json;
@@ -95,7 +97,9 @@ impl VaultView for AppVault {
 }
 
 struct Inner {
-    vault_path: PathBuf,
+    vault_path: Mutex<PathBuf>,
+    device_id: String,
+    generation: AtomicU64,
     data_dir: PathBuf,
     unlocked: Arc<Mutex<Option<UnlockedVault>>>,
     sessions: Mutex<HashMap<String, Session>>,
@@ -119,7 +123,11 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Result<Self, String> {
         std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
-        let vault_path = config.data_dir.join("vault.khv");
+        let local = sync::load_or_create_local_config(&config.data_dir).map_err(|e| e.to_string())?;
+        let vault_path = local
+            .vault_path
+            .unwrap_or_else(|| sync::default_vault_file(&config.data_dir));
+        let device_id = local.device_id;
         let webauthn_path = config.data_dir.join("webauthn.json");
         let idle_timeout = config.idle_timeout;
         let prf_wrap = webauthn::load_prf_flag(&webauthn_path);
@@ -138,7 +146,9 @@ impl AppState {
         }
         let state = Self {
             inner: Arc::new(Inner {
-                vault_path,
+                vault_path: Mutex::new(vault_path),
+                device_id,
+                generation: AtomicU64::new(0),
                 data_dir: config.data_dir.clone(),
                 unlocked,
                 sessions: Mutex::new(HashMap::new()),
@@ -167,11 +177,37 @@ impl AppState {
                 ticker.lock_if_idle();
             }
         });
+        let syncer = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(sync::SYNC_POLL_SECS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                syncer.poll_sync();
+            }
+        });
         Ok(state)
     }
 
-    pub fn vault_path(&self) -> &Path {
-        &self.inner.vault_path
+    pub fn vault_path(&self) -> PathBuf {
+        self.inner
+            .vault_path
+            .lock()
+            .expect("vault path")
+            .clone()
+    }
+
+    fn remember_vault_path(&self, path: PathBuf) -> Result<(), VaultError> {
+        sync::save_local_config(
+            &self.inner.data_dir,
+            &sync::LocalConfig {
+                device_id: self.inner.device_id.clone(),
+                vault_path: Some(path.clone()),
+            },
+        )?;
+        *self.inner.vault_path.lock().expect("vault path") = path;
+        Ok(())
     }
 
     pub(crate) fn dist_dir(&self) -> Option<PathBuf> {
@@ -251,11 +287,12 @@ impl AppState {
 
     /// Move the last master-password stamp outside the configured interval.
     pub fn testing_expire_password_interval(&self) {
+        let path = self.vault_path();
         let mut cached = None;
         if let Ok(mut guard) = self.inner.unlocked.lock() {
             if let Some(unlocked) = guard.as_mut() {
                 vault::backdate_password_unlock(&mut unlocked.data.settings, 30);
-                let _ = vault::persist_unlocked(&self.inner.vault_path, unlocked);
+                let _ = vault::persist_unlocked(&path, unlocked);
                 cached = Some(unlocked.data.settings.clone());
             }
         }
@@ -269,7 +306,8 @@ impl AppState {
     }
 
     pub fn vault_exists(&self) -> bool {
-        self.inner.vault_path.exists()
+        let path = self.vault_path();
+        path.exists() || sync::icloud_placeholder(&path).is_some_and(|placeholder| placeholder.exists())
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -336,34 +374,49 @@ impl AppState {
         f: impl FnOnce(&mut UnlockedVault) -> Result<T, VaultError>,
     ) -> Result<T, VaultError> {
         self.lock_if_idle();
+        let path = self.vault_path();
         let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
         let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
+        if unlocked.device_id.is_empty() {
+            unlocked.device_id = self.inner.device_id.clone();
+        }
         let result = f(unlocked)?;
-        vault::persist_unlocked(&self.inner.vault_path, unlocked)?;
+        unlocked.dirty = true;
+        vault::persist_unlocked(&path, unlocked)?;
+        self.inner.generation.fetch_add(1, Ordering::Relaxed);
         Ok(result)
     }
 
     pub fn create_vault(&self, password: &str) -> Result<(), VaultError> {
+        let path = self.vault_path();
         let secret = SecretString::new(password.to_string());
-        let unlocked = vault::create_vault_at(&self.inner.vault_path, &secret)?;
+        let unlocked = vault::create_vault_at(&path, &secret)?;
         self.install_unlocked(unlocked, true)
     }
 
     pub fn unlock_vault(&self, password: &str) -> Result<(), VaultError> {
+        let path = self.vault_path();
         let secret = SecretString::new(password.to_string());
-        let unlocked = vault::unlock_file(&self.inner.vault_path, &secret)?;
+        let unlocked = vault::unlock_file(&path, &secret)?;
         self.install_unlocked(unlocked, true)
     }
 
     pub(crate) fn unlock_with_existing_key(&self, key: vault::VaultKey) -> Result<(), VaultError> {
-        let unlocked = vault::unlock_file_with_key(&self.inner.vault_path, &key)?;
+        let path = self.vault_path();
+        let unlocked = vault::unlock_file_with_key(&path, &key)?;
         self.install_unlocked(unlocked, false)
     }
 
     fn install_unlocked(&self, mut unlocked: UnlockedVault, from_password: bool) -> Result<(), VaultError> {
+        let path = self.vault_path();
+        if unlocked.device_id.is_empty() {
+            unlocked.device_id = self.inner.device_id.clone();
+        }
+        unlocked.bound_path = path.clone();
         if from_password {
             vault::mark_password_unlock(&mut unlocked.data);
-            vault::persist_unlocked(&self.inner.vault_path, &unlocked)?;
+            unlocked.dirty = true;
+            vault::persist_unlocked(&path, &mut unlocked)?;
             if let Ok(mut policy) = self.inner.policy.lock() {
                 policy.password_verified = true;
                 policy.settings = unlocked.data.settings.clone();
@@ -373,10 +426,12 @@ impl AppState {
         } else if !unlocked.data.settings.biometrics_enabled {
             return Err(VaultError::BiometricsUnavailable);
         } else {
+            sync::pull_vault(&path, &mut unlocked)?;
             self.cache_settings(&unlocked.data.settings);
         }
         self.apply_idle(&unlocked.data.settings);
         *self.inner.unlocked.lock().map_err(|_| VaultError::Locked)? = Some(unlocked);
+        self.inner.generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -385,31 +440,19 @@ impl AppState {
     }
 
     pub fn add_item(&self, item: VaultItem) -> Result<VaultItem, VaultError> {
-        self.with_unlocked_mut(|u| {
-            u.data.items.push(item.clone());
-            Ok(item)
-        })
+        let device = self.inner.device_id.clone();
+        self.with_unlocked_mut(|u| Ok(sync::insert_new(&mut u.data, item, &device)))
     }
 
-    pub fn update_item(&self, mut item: VaultItem) -> Result<VaultItem, VaultError> {
-        vault::validate_item_type(&item.item_type)?;
-        item.updated_at = vault::now_rfc3339();
-        self.with_unlocked_mut(|u| {
-            if !u.data.items.iter().any(|i| i.id == item.id) {
-                return Err(VaultError::ItemNotFound);
-            }
-            u.data.upsert(item.clone());
-            Ok(item)
-        })
+    pub fn update_item(&self, item: VaultItem) -> Result<VaultItem, VaultError> {
+        let device = self.inner.device_id.clone();
+        self.with_unlocked_mut(|u| sync::update_existing(&mut u.data, item, &device))
     }
 
     pub fn delete_item(&self, id: &str) -> Result<(), VaultError> {
-        self.with_unlocked_mut(|u| {
-            if !u.data.remove(id) {
-                return Err(VaultError::ItemNotFound);
-            }
-            Ok(())
-        })
+        let device = self.inner.device_id.clone();
+        let id = id.to_string();
+        self.with_unlocked_mut(|u| sync::delete_item(&mut u.data, &id, &device))
     }
 
     pub fn change_master_password(
@@ -457,6 +500,156 @@ impl AppState {
             self.apply_idle(&settings);
         }
         Ok(())
+    }
+
+    /// Reload the vault file if iCloud (or another writer) changed it.
+    /// Takes the path lock before the vault lock so it cannot deadlock with saves.
+    pub fn poll_sync(&self) {
+        let path = self.vault_path();
+        let Ok(mut guard) = self.inner.unlocked.lock() else {
+            return;
+        };
+        let Some(unlocked) = guard.as_mut() else {
+            return;
+        };
+        if unlocked.device_id.is_empty() {
+            unlocked.device_id = self.inner.device_id.clone();
+        }
+        if !unlocked.bound_path.as_os_str().is_empty() && unlocked.bound_path != path {
+            return;
+        }
+        let before = sync::content_fingerprint(&unlocked.data);
+        if sync::pull_vault(&path, unlocked).is_ok() {
+            let after = sync::content_fingerprint(&unlocked.data);
+            if before != after {
+                self.inner.generation.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn sync_status(&self) -> SyncStatus {
+        self.poll_sync();
+        let path = self.vault_path();
+        let guard = self.inner.unlocked.lock().ok();
+        let unlocked = guard.as_ref().and_then(|inner| inner.as_ref());
+        sync::status_of(
+            &path,
+            &self.inner.device_id,
+            unlocked,
+            self.inner.generation.load(Ordering::Relaxed),
+            unlocked.is_none(),
+        )
+    }
+
+    pub fn sync_conflicts(&self) -> Result<Vec<ConflictView>, VaultError> {
+        self.with_unlocked(|unlocked| sync::list_conflicts(&unlocked.data))
+    }
+
+    pub fn resolve_sync_conflict(&self, item_id: &str, conflict_id: &str, action: &str) -> Result<(), VaultError> {
+        let device = self.inner.device_id.clone();
+        self.with_unlocked_mut(|unlocked| {
+            sync::resolve_conflict(&mut unlocked.data, item_id, conflict_id, action, &device)
+        })
+    }
+
+    pub fn set_vault_location(&self, raw_path: &str, mode: &str) -> Result<SyncStatus, VaultError> {
+        let dest = sync::normalize_path(&sync::user_path(raw_path));
+        sync::require_absolute(&dest)?;
+        match mode {
+            "move" => self.move_vault(dest)?,
+            "open" => self.open_vault_at(dest)?,
+            _ => return Err(VaultError::InvalidItemType),
+        }
+        Ok(self.sync_status())
+    }
+
+    pub fn merge_sync_password(&self, raw_path: &str, password: &str) -> Result<(), VaultError> {
+        let foreign = sync::normalize_path(&sync::user_path(raw_path));
+        sync::require_absolute(&foreign)?;
+        let main = self.vault_path();
+        let secret = SecretString::new(password.to_string());
+        {
+            let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
+            let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
+            if unlocked.device_id.is_empty() {
+                unlocked.device_id = self.inner.device_id.clone();
+            }
+            sync::merge_with_password(&main, &foreign, &secret, unlocked)?;
+            vault::persist_unlocked(&main, unlocked)?;
+        }
+        self.inner.generation.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn move_vault(&self, dest: PathBuf) -> Result<(), VaultError> {
+        let src = self.vault_path();
+        {
+            let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
+            let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
+            if unlocked.device_id.is_empty() {
+                unlocked.device_id = self.inner.device_id.clone();
+            }
+            unlocked.dirty = true;
+            vault::persist_unlocked(&src, unlocked)?;
+            unlocked.bound_path = dest.clone();
+        }
+        if let Err(err) = sync::relocate_vault_file(&src, &dest) {
+            if let Ok(mut guard) = self.inner.unlocked.lock() {
+                if let Some(unlocked) = guard.as_mut() {
+                    unlocked.bound_path = src;
+                }
+            }
+            return Err(err);
+        }
+        self.remember_vault_path(dest)?;
+        self.inner.generation.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn open_vault_at(&self, dest: PathBuf) -> Result<(), VaultError> {
+        let exists = dest.exists();
+        let placeholder = sync::icloud_placeholder(&dest).is_some_and(|path| path.exists());
+        if !exists && placeholder {
+            sync::prompt_icloud_download(&dest);
+            self.lock_vault();
+            self.remember_vault_path(dest)?;
+            return Ok(());
+        }
+        if !exists {
+            return Err(VaultError::NotFound);
+        }
+        let key = {
+            let guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
+            let unlocked = guard.as_ref().ok_or(VaultError::Locked)?;
+            unlocked.key.clone()
+        };
+        match vault::unlock_file_with_key(&dest, &key) {
+            Ok(opened) => {
+                {
+                    let mut guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
+                    let unlocked = guard.as_mut().ok_or(VaultError::Locked)?;
+                    unlocked.data = opened.data;
+                    unlocked.stamp = opened.stamp;
+                    unlocked.dirty = false;
+                    unlocked.pending_password_files.clear();
+                    unlocked.waiting_icloud = false;
+                    unlocked.sync_error = None;
+                    if unlocked.device_id.is_empty() {
+                        unlocked.device_id = self.inner.device_id.clone();
+                    }
+                    unlocked.bound_path = dest.clone();
+                }
+                self.remember_vault_path(dest)?;
+                self.inner.generation.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(err) if foreign_password(&err) => {
+                self.lock_vault();
+                self.remember_vault_path(dest)?;
+                Err(VaultError::SyncPasswordRequired)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn issue_session(&self) -> (String, String) {
@@ -685,7 +878,10 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         | VaultError::PasskeySessionOnly
         | VaultError::Cancelled => StatusCode::UNAUTHORIZED,
         VaultError::NotFound | VaultError::ItemNotFound => StatusCode::NOT_FOUND,
-        VaultError::AlreadyExists => StatusCode::CONFLICT,
+        VaultError::AlreadyExists
+        | VaultError::SyncPasswordRequired
+        | VaultError::WaitingForIcloud => StatusCode::CONFLICT,
+        VaultError::AbsolutePathRequired => StatusCode::BAD_REQUEST,
         VaultError::InvalidItemType
         | VaultError::GeneratorLength
         | VaultError::GeneratorCharset
@@ -694,6 +890,18 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         _ => StatusCode::BAD_REQUEST,
     };
     err_json(status, &err.to_string())
+}
+
+fn foreign_password(err: &VaultError) -> bool {
+    matches!(
+        err,
+        VaultError::Tampered
+            | VaultError::WrongPassword
+            | VaultError::Crypto
+            | VaultError::Base64(_)
+            | VaultError::Json(_)
+            | VaultError::SyncPasswordRequired
+    )
 }
 
 fn idle_check_period(timeout: Duration) -> Duration {

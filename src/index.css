@@ -678,6 +678,37 @@ h3 {
   min-width: 0;
 }
 
+.sync-banner {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 0;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--gold) 18%, var(--surface));
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.conflict-row {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.conflict-row p {
+  margin: 0;
+}
+
+.path-note {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .actions {
   display: flex;
   gap: 8px;

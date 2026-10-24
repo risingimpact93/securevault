@@ -93,6 +93,28 @@ struct ImportBody {
     file_base64: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultLocationBody {
+    path: String,
+    mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolveConflictBody {
+    item_id: String,
+    conflict_id: String,
+    action: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergePasswordBody {
+    path: String,
+    password: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionView {
@@ -126,6 +148,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/activity", post(activity))
         .route("/api/idle-lock", post(idle_expire))
         .route("/api/settings", get(get_settings).post(set_settings))
+        .route("/api/sync/status", get(sync_status))
+        .route("/api/sync/conflicts", get(sync_conflicts))
+        .route("/api/sync/conflicts/resolve", post(resolve_sync_conflict))
+        .route("/api/sync/location", post(set_vault_location))
+        .route("/api/sync/merge-password", post(merge_sync_password))
         .route("/api/biometrics/status", get(biometric_status))
         .route("/api/webauthn/register/start", post(webauthn_register_start))
         .route("/api/webauthn/register/finish", post(webauthn_register_finish))
@@ -285,6 +312,7 @@ async fn add_item(
         expiry: draft.expiry,
         cvv: draft.cvv,
         tags: draft.tags,
+        ..VaultItem::skeleton()
     };
     match state.add_item(item) {
         Ok(item) => Json(item).into_response(),
@@ -479,6 +507,65 @@ async fn respond_approval(
     match state.approver().respond(&id, body.approved) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => err_json(StatusCode::NOT_FOUND, &err),
+    }
+}
+
+async fn sync_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, false) {
+        return resp;
+    }
+    Json(state.sync_status()).into_response()
+}
+
+async fn sync_conflicts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, false) {
+        return resp;
+    }
+    match state.sync_conflicts() {
+        Ok(conflicts) => Json(conflicts).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn resolve_sync_conflict(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ResolveConflictBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.resolve_sync_conflict(&body.item_id, &body.conflict_id, &body.action) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn set_vault_location(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VaultLocationBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.set_vault_location(&body.path, &body.mode) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn merge_sync_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<MergePasswordBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.merge_sync_password(&body.path, &body.password) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => vault_error(err),
     }
 }
 

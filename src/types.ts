@@ -102,3 +102,36 @@ export interface SettingsPatch {
   lockOnScreenLock?: boolean;
   passwordIntervalDays?: number;
 }
+
+export type SyncState = "ok" | "waiting_icloud" | "password_required" | "error";
+
+export interface SyncStatus {
+  state: SyncState | string;
+  vaultPath: string;
+  deviceId: string;
+  revision: number;
+  generation: number;
+  conflictCount: number;
+  pendingFiles: string[];
+  message: string;
+  locked: boolean;
+}
+
+export interface ConflictView {
+  itemId: string;
+  conflictId: string;
+  currentDeleted: boolean;
+  currentTitle: string;
+  currentUpdatedAt: string;
+  currentItemType: string;
+  currentUsername: string;
+  conflictDeleted: boolean;
+  conflictTitle: string;
+  conflictUpdatedAt: string;
+  conflictItemType: string;
+  conflictUsername: string;
+  conflictUpdatedBy: string;
+}
+
+export type VaultLocationMode = "move" | "open";
+export type ConflictAction = "keep" | "restore";

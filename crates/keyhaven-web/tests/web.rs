@@ -253,6 +253,7 @@ fn sample_item() -> VaultItem {
         expiry: None,
         cvv: None,
         tags: vec!["roundtrip".into()],
+        ..VaultItem::skeleton()
     }
 }
 
@@ -595,7 +596,7 @@ fn vault_file_desktop_and_web_paths_are_interchangeable() {
     let desktop_file = desktop_dir.join("vault.khv");
     let mut unlocked = vault::create_vault_at(&desktop_file, &password).unwrap();
     unlocked.data.items.push(sample_item());
-    vault::persist_unlocked(&desktop_file, &unlocked).unwrap();
+    vault::persist_unlocked(&desktop_file, &mut unlocked).unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -886,11 +887,12 @@ async fn vault_settings_live_inside_ciphertext() {
     assert_eq!(loaded_http.json()["lockOnScreenLock"], true);
     assert_eq!(loaded_http.json()["passwordIntervalDays"], 21);
 
-    let decrypted = vault::unlock_file(state.vault_path(), &SecretString::new(MASTER.into())).unwrap();
+    let vault_file = state.vault_path();
+    let decrypted = vault::unlock_file(&vault_file, &SecretString::new(MASTER.into())).unwrap();
     assert_eq!(decrypted.data.settings.auto_lock_minutes, 10);
     assert!(decrypted.data.settings.lock_on_screen_lock);
     assert_eq!(decrypted.data.settings.password_interval_days, 21);
-    let raw = std::fs::read(state.vault_path()).unwrap();
+    let raw = std::fs::read(&vault_file).unwrap();
     let text = String::from_utf8_lossy(&raw);
     assert!(!text.contains("lockOnScreenLock"), "settings must stay inside the ciphertext");
 }
@@ -1058,7 +1060,8 @@ async fn reregister_and_delete_invalidate_passkey() {
     assert_eq!(removed.json()["configured"], false);
     let settings = json_req(port, "GET", "/api/settings", Some(&mut jar), Some(&csrf), None).await;
     assert_eq!(settings.json()["biometricsEnabled"], false);
-    let decrypted = vault::unlock_file(state.vault_path(), &SecretString::new(MASTER.into())).unwrap();
+    let vault_file = state.vault_path();
+    let decrypted = vault::unlock_file(&vault_file, &SecretString::new(MASTER.into())).unwrap();
     assert!(!decrypted.data.settings.biometrics_enabled);
     let gone = json_req_local(
         port,

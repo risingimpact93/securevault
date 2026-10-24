@@ -1,8 +1,9 @@
 //! Pure vault crypto and item storage. Independent of Tauri.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -85,6 +86,14 @@ pub enum VaultError {
     Json(#[from] serde_json::Error),
     #[error("base64 error: {0}")]
     Base64(#[from] base64::DecodeError),
+    /// Another copy of the vault could not be decrypted with the current key.
+    #[error("vault file needs a different password")]
+    SyncPasswordRequired,
+    /// The vault file is an iCloud placeholder and the ciphertext is not local yet.
+    #[error("waiting for iCloud download")]
+    WaitingForIcloud,
+    #[error("path must be absolute")]
+    AbsolutePathRequired,
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -139,14 +148,89 @@ pub struct EncryptedVault {
     pub ciphertext: String,
 }
 
+/// Non-secret structural fields shared by conflict copies and delete snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemBody {
+    #[serde(default)]
+    pub item_type: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub favorite: bool,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cardholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvv: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// A concurrent version that lost the newest-`updated_at` comparison.
+/// Stored on the winning item (or its tombstone) so nothing is dropped silently.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemConflict {
+    pub id: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(flatten)]
+    pub body: ItemBody,
+}
+
+/// A deleted item. Kept so an older copy cannot bring the item back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Tombstone {
+    pub id: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<ItemConflict>,
+    /// Fingerprints of conflicts the user already resolved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_conflicts: Vec<String>,
+    /// Body at delete time, so a concurrent edit does not erase it.
+    #[serde(default)]
+    pub body: ItemBody,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultItem {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub item_type: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub favorite: bool,
+    #[serde(default)]
     pub created_at: String,
+    #[serde(default)]
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -165,8 +249,77 @@ pub struct VaultItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvv: Option<String>,
     /// Free-form labels. Missing on older vault files; never a secret channel.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Device id → counter. Empty on files written before sync existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<ItemConflict>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_conflicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+}
+
+impl VaultItem {
+    pub fn skeleton() -> Self {
+        Self {
+            id: String::new(),
+            item_type: String::new(),
+            title: String::new(),
+            favorite: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            username: None,
+            password: None,
+            url: None,
+            notes: None,
+            cardholder: None,
+            number: None,
+            expiry: None,
+            cvv: None,
+            tags: Vec::new(),
+            versions: BTreeMap::new(),
+            conflicts: Vec::new(),
+            resolved_conflicts: Vec::new(),
+            updated_by: None,
+        }
+    }
+
+    pub fn body(&self) -> ItemBody {
+        ItemBody {
+            item_type: self.item_type.clone(),
+            title: self.title.clone(),
+            favorite: self.favorite,
+            created_at: self.created_at.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            url: self.url.clone(),
+            notes: self.notes.clone(),
+            cardholder: self.cardholder.clone(),
+            number: self.number.clone(),
+            expiry: self.expiry.clone(),
+            cvv: self.cvv.clone(),
+            tags: self.tags.clone(),
+        }
+    }
+
+    pub fn apply_body(&mut self, body: &ItemBody) {
+        self.item_type = body.item_type.clone();
+        self.title = body.title.clone();
+        self.favorite = body.favorite;
+        self.created_at = body.created_at.clone();
+        self.username = body.username.clone();
+        self.password = body.password.clone();
+        self.url = body.url.clone();
+        self.notes = body.notes.clone();
+        self.cardholder = body.cardholder.clone();
+        self.number = body.number.clone();
+        self.expiry = body.expiry.clone();
+        self.cvv = body.cvv.clone();
+        self.tags = body.tags.clone();
+    }
 }
 
 fn default_auto_lock_minutes() -> u32 {
@@ -193,6 +346,9 @@ pub struct VaultSettings {
     /// Last successful master-password unlock. Biometric unlock does not refresh it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_password_unlock_at: Option<String>,
+    /// When the preference fields above were last changed. Password-unlock stamps do not move this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_updated_at: Option<String>,
 }
 
 impl Default for VaultSettings {
@@ -203,6 +359,7 @@ impl Default for VaultSettings {
             biometrics_enabled: false,
             password_interval_days: DEFAULT_PASSWORD_INTERVAL_DAYS,
             last_password_unlock_at: None,
+            settings_updated_at: None,
         }
     }
 }
@@ -243,7 +400,17 @@ impl VaultSettings {
             }
             self.password_interval_days = days;
         }
+        if patch.auto_lock_minutes.is_some()
+            || patch.lock_on_screen_lock.is_some()
+            || patch.password_interval_days.is_some()
+        {
+            self.touch();
+        }
         Ok(())
+    }
+
+    pub fn touch(&mut self) {
+        self.settings_updated_at = Some(now_rfc3339());
     }
 }
 
@@ -342,12 +509,24 @@ fn prf_key(prf_output: &[u8]) -> Result<[u8; KEY_LEN], VaultError> {
     Ok(key)
 }
 
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct VaultData {
     pub items: Vec<VaultItem>,
     /// Missing on vaults created before settings lived in the payload.
     #[serde(default)]
     pub settings: VaultSettings,
+    /// Increments on every successful save. Old files deserialize as 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub revision: u64,
+    /// Device that last wrote this file. Each install keeps its own id in local config.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tombstones: Vec<Tombstone>,
 }
 
 impl VaultData {
@@ -360,15 +539,11 @@ impl VaultData {
     }
 
     pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.items.len();
-        self.items.retain(|i| i.id != id);
-        self.items.len() != before
+        crate::sync::delete_item(self, id, "legacy").is_ok()
     }
 
     pub fn merge(&mut self, other: VaultData) {
-        for item in other.items {
-            self.upsert(item);
-        }
+        crate::sync::merge_vault(self, &other);
     }
 }
 
@@ -379,6 +554,34 @@ pub struct UnlockedVault {
     pub salt: Vec<u8>,
     pub params: KdfParams,
     pub data: VaultData,
+    /// Stable id for this install, from the local config file. Not written as a secret.
+    pub device_id: String,
+    /// Identity of the ciphertext this memory was last read from or written to.
+    pub stamp: crate::sync::FileStamp,
+    pub dirty: bool,
+    /// Sibling or main files that need a different master password before merge.
+    pub pending_password_files: Vec<String>,
+    pub waiting_icloud: bool,
+    pub sync_error: Option<String>,
+    /// Vault path this memory belongs to. Poll skips a tick when the configured path differs,
+    /// so a location switch cannot write the new vault back onto the previous file.
+    pub bound_path: PathBuf,
+}
+
+fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultData) -> UnlockedVault {
+    UnlockedVault {
+        key,
+        salt,
+        params,
+        data,
+        device_id: String::new(),
+        stamp: crate::sync::FileStamp::default(),
+        dirty: false,
+        pending_password_files: Vec::new(),
+        waiting_icloud: false,
+        sync_error: None,
+        bound_path: PathBuf::new(),
+    }
 }
 
 impl UnlockedVault {
@@ -405,32 +608,27 @@ impl UnlockedVault {
     }
 }
 
-/// Desktop persist path: encrypt the in-memory vault and atomically replace the file.
-pub fn persist_unlocked(path: &Path, unlocked: &UnlockedVault) -> Result<(), VaultError> {
-    let enc = encrypt_data(
-        &unlocked.data,
-        &unlocked.key,
-        &unlocked.params,
-        &unlocked.salt,
-    )?;
-    let bytes = serialize_encrypted(&enc)?;
-    atomic_write(path, &bytes)
+/// Encrypt the in-memory vault. If the file changed since the last read, merge first.
+pub fn persist_unlocked(path: &Path, unlocked: &mut UnlockedVault) -> Result<(), VaultError> {
+    crate::sync::save_vault(path, unlocked)
 }
 
 /// Desktop unlock path: read the file and decrypt with the master password.
 pub fn unlock_file(path: &Path, password: &SecretString) -> Result<UnlockedVault, VaultError> {
     if !path.exists() {
+        if crate::sync::icloud_placeholder(path).is_some_and(|placeholder| placeholder.exists()) {
+            crate::sync::prompt_icloud_download(path);
+            return Err(VaultError::WaitingForIcloud);
+        }
         return Err(VaultError::NotFound);
     }
     let bytes = fs::read(path)?;
     let enc: EncryptedVault = parse_encrypted(&bytes)?;
-    let (key, salt, data) = unlock_with_password(&enc, password)?;
-    Ok(UnlockedVault {
-        key,
-        salt,
-        params: enc.kdf,
-        data,
-    })
+    let (key, salt, mut data) = unlock_with_password(&enc, password)?;
+    crate::sync::migrate_data(&mut data);
+    let mut unlocked = fresh_unlocked(key, salt, enc.kdf, data);
+    unlocked.stamp = crate::sync::capture_stamp(path, unlocked.data.revision)?;
+    Ok(unlocked)
 }
 
 /// Desktop create path: write a new empty vault file and return it unlocked.
@@ -438,18 +636,19 @@ pub fn create_vault_at(path: &Path, password: &SecretString) -> Result<UnlockedV
     if path.exists() {
         return Err(VaultError::AlreadyExists);
     }
+    if crate::sync::icloud_placeholder(path).is_some_and(|placeholder| placeholder.exists()) {
+        crate::sync::prompt_icloud_download(path);
+        return Err(VaultError::WaitingForIcloud);
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let (key, salt, params, enc, data) = create_empty_vault(password)?;
     let bytes = serialize_encrypted(&enc)?;
     atomic_write(path, &bytes)?;
-    Ok(UnlockedVault {
-        key,
-        salt,
-        params,
-        data,
-    })
+    let mut unlocked = fresh_unlocked(key, salt, params, data);
+    unlocked.stamp = crate::sync::capture_stamp(path, unlocked.data.revision)?;
+    Ok(unlocked)
 }
 
 pub fn default_kdf_params() -> KdfParams {
@@ -583,17 +782,15 @@ pub fn unlock_file_with_key(path: &Path, key: &VaultKey) -> Result<UnlockedVault
     }
     let bytes = fs::read(path)?;
     let enc: EncryptedVault = parse_encrypted(&bytes)?;
-    let data = decrypt_data(&enc, key)?;
+    let mut data = decrypt_data(&enc, key)?;
+    crate::sync::migrate_data(&mut data);
     let salt = B64.decode(&enc.salt)?;
     if salt.len() != SALT_LEN {
         return Err(VaultError::Tampered);
     }
-    Ok(UnlockedVault {
-        key: key.clone(),
-        salt,
-        params: enc.kdf,
-        data,
-    })
+    let mut unlocked = fresh_unlocked(key.clone(), salt, enc.kdf, data);
+    unlocked.stamp = crate::sync::capture_stamp(path, unlocked.data.revision)?;
+    Ok(unlocked)
 }
 
 pub fn unlock_with_password(
@@ -660,7 +857,11 @@ pub fn import_bytes(bytes: &[u8], export_password: &SecretString) -> Result<Vaul
 }
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), VaultError> {
-    let tmp = path.with_extension("khv.tmp");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vault.khv");
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
     {
         let mut f = File::create(&tmp)?;
         f.write_all(data)?;
@@ -670,7 +871,10 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), VaultError> {
         #[cfg(windows)]
         fs::remove_file(path)?;
     }
-    fs::rename(&tmp, path)?;
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
     Ok(())
 }
 
@@ -746,6 +950,7 @@ mod tests {
             expiry: None,
             cvv: None,
             tags: vec!["example".into()],
+            ..VaultItem::skeleton()
         }
     }
 
@@ -890,7 +1095,7 @@ mod tests {
         let password = secret("desktop-path-master");
         let mut unlocked = create_vault_at(&path, &password).unwrap();
         unlocked.data.items.push(sample_item());
-        persist_unlocked(&path, &unlocked).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
         let loaded = unlock_file(&path, &password).unwrap();
         assert_eq!(loaded.data.items, unlocked.data.items);
         let err = unlock_file(&path, &secret("nope")).unwrap_err();

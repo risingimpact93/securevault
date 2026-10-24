@@ -1086,6 +1086,7 @@ mod tests {
                 expiry: None,
                 cvv: None,
                 tags: vec!["personal".into(), "mail".into()],
+                ..VaultItem::skeleton()
             },
             VaultItem {
                 id: CARD_ID.into(),
@@ -1103,6 +1104,7 @@ mod tests {
                 expiry: Some("09/28".into()),
                 cvv: Some(SECRET_CVV.into()),
                 tags: vec!["finance".into()],
+                ..VaultItem::skeleton()
             },
         ]
     }

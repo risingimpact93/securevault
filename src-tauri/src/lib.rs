@@ -1,11 +1,12 @@
 mod mcp_host;
 mod platform;
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use keyhaven_core::sync::{self, ConflictView, SyncStatus};
 use keyhaven_core::vault::{
     self, generate_password as vault_generate_password, import_bytes, mark_password_unlock, new_id,
     now_rfc3339, password_unlock_expired_now, persist_unlocked, unlock_file_with_key, validate_item_type,
@@ -17,12 +18,21 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use zeroize::Zeroize;
 
+#[derive(Clone)]
+struct LocalState {
+    device_id: String,
+    vault_path: PathBuf,
+    data_dir: PathBuf,
+}
+
 pub struct AppState {
     pub(crate) unlocked: Arc<Mutex<Option<UnlockedVault>>>,
     pub(crate) mcp: Mutex<Option<Arc<mcp_host::McpHost>>>,
     password_verified: AtomicBool,
     pub(crate) settings: Mutex<VaultSettings>,
     biometrics_invalidated: AtomicBool,
+    local: Mutex<Option<LocalState>>,
+    generation: AtomicU64,
 }
 
 fn remember_settings(state: &AppState, settings: &VaultSettings) {
@@ -31,15 +41,25 @@ fn remember_settings(state: &AppState, settings: &VaultSettings) {
     }
 }
 
+fn bind_device(unlocked: &mut UnlockedVault, device_id: &str) {
+    if unlocked.device_id.is_empty() {
+        unlocked.device_id = device_id.to_string();
+    }
+}
+
 fn accept_password_unlock(app: &AppHandle, state: &AppState, mut unlocked: UnlockedVault) -> Result<(), String> {
     let path = vault_path(app)?;
+    let device = device_id(app)?;
     if state.biometrics_invalidated.load(Ordering::Relaxed) {
         platform::delete_vault_key();
         unlocked.data.settings.biometrics_enabled = false;
+        unlocked.data.settings.touch();
         state.biometrics_invalidated.store(false, Ordering::Relaxed);
     }
+    bind_device(&mut unlocked, &device);
     mark_password_unlock(&mut unlocked.data);
-    persist(&path, &unlocked)?;
+    unlocked.bound_path = path.clone();
+    persist(app, &path, &mut unlocked)?;
     state.password_verified.store(true, Ordering::Relaxed);
     remember_settings(state, &unlocked.data.settings);
     let mut guard = require_unlocked(state)?;
@@ -112,14 +132,98 @@ fn err(e: VaultError) -> String {
     e.to_string()
 }
 
-fn vault_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn ensure_local(app: &AppHandle) -> Result<LocalState, String> {
+    let state = app.state::<AppState>();
+    if let Ok(guard) = state.local.lock() {
+        if let Some(local) = guard.clone() {
+            return Ok(local);
+        }
+    }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("vault.khv"))
+    let config = sync::load_or_create_local_config(&dir).map_err(err)?;
+    let local = LocalState {
+        device_id: config.device_id,
+        vault_path: config.vault_path.unwrap_or_else(|| dir.join("vault.khv")),
+        data_dir: dir,
+    };
+    if let Ok(mut guard) = state.local.lock() {
+        if let Some(existing) = guard.clone() {
+            return Ok(existing);
+        }
+        *guard = Some(local.clone());
+    }
+    Ok(local)
 }
 
-fn persist(path: &PathBuf, unlocked: &UnlockedVault) -> Result<(), String> {
-    persist_unlocked(path, unlocked).map_err(err)
+fn vault_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(ensure_local(app)?.vault_path)
+}
+
+fn device_id(app: &AppHandle) -> Result<String, String> {
+    Ok(ensure_local(app)?.device_id)
+}
+
+fn remember_vault_path(app: &AppHandle, path: PathBuf) -> Result<(), String> {
+    let mut local = ensure_local(app)?;
+    local.vault_path = path.clone();
+    sync::save_local_config(
+        &local.data_dir,
+        &sync::LocalConfig {
+            device_id: local.device_id.clone(),
+            vault_path: Some(path),
+        },
+    )
+    .map_err(err)?;
+    let state = app.state::<AppState>();
+    if let Ok(mut guard) = state.local.lock() {
+        *guard = Some(local);
+    }
+    Ok(())
+}
+
+fn persist(app: &AppHandle, path: &Path, unlocked: &mut UnlockedVault) -> Result<(), String> {
+    persist_unlocked(path, unlocked).map_err(err)?;
+    app.state::<AppState>().generation.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+fn foreign_password(error: &VaultError) -> bool {
+    matches!(
+        error,
+        VaultError::Tampered
+            | VaultError::WrongPassword
+            | VaultError::Crypto
+            | VaultError::Base64(_)
+            | VaultError::Json(_)
+            | VaultError::SyncPasswordRequired
+    )
+}
+
+fn poll_desktop(app: &AppHandle) {
+    let Ok(local) = ensure_local(app) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    let Ok(mut guard) = state.unlocked.lock() else {
+        return;
+    };
+    let Some(unlocked) = guard.as_mut() else {
+        return;
+    };
+    if unlocked.device_id.is_empty() {
+        unlocked.device_id = local.device_id.clone();
+    }
+    if !unlocked.bound_path.as_os_str().is_empty() && unlocked.bound_path != local.vault_path {
+        return;
+    }
+    let before = sync::content_fingerprint(&unlocked.data);
+    if sync::pull_vault(&local.vault_path, unlocked).is_ok() {
+        let after = sync::content_fingerprint(&unlocked.data);
+        if before != after {
+            state.generation.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 fn require_unlocked(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option<UnlockedVault>>, String> {
@@ -131,7 +235,9 @@ fn require_unlocked(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option
 
 #[tauri::command]
 fn vault_exists(app: AppHandle) -> Result<bool, String> {
-    Ok(vault_path(&app)?.exists())
+    let path = vault_path(&app)?;
+    let placeholder = sync::icloud_placeholder(&path).is_some_and(|candidate| candidate.exists());
+    Ok(path.exists() || placeholder)
 }
 
 #[tauri::command]
@@ -207,46 +313,48 @@ fn draft_to_item(draft: ItemDraft, id: String, created_at: String, updated_at: S
         expiry: draft.expiry,
         cvv: draft.cvv,
         tags: draft.tags,
+        ..VaultItem::skeleton()
     })
 }
 
 #[tauri::command]
 fn add_item(app: AppHandle, state: State<AppState>, item: ItemDraft) -> Result<VaultItem, String> {
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let now = now_rfc3339();
     let new_item = draft_to_item(item, new_id(), now.clone(), now)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
-    unlocked.data.items.push(new_item.clone());
-    persist(&path, unlocked)?;
-    Ok(new_item)
+    bind_device(unlocked, &device);
+    let stored = sync::insert_new(&mut unlocked.data, new_item, &unlocked.device_id);
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
+    Ok(stored)
 }
 
 #[tauri::command]
 fn update_item(app: AppHandle, state: State<AppState>, item: VaultItem) -> Result<VaultItem, String> {
-    validate_item_type(&item.item_type).map_err(err)?;
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
-    let mut updated = item;
-    updated.updated_at = now_rfc3339();
-    if !unlocked.data.items.iter().any(|i| i.id == updated.id) {
-        return Err("item not found".into());
-    }
-    unlocked.data.upsert(updated.clone());
-    persist(&path, unlocked)?;
+    bind_device(unlocked, &device);
+    let updated = sync::update_existing(&mut unlocked.data, item, &unlocked.device_id).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
     Ok(updated)
 }
 
 #[tauri::command]
 fn delete_item(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
-    if !unlocked.data.remove(&id) {
-        return Err("item not found".into());
-    }
-    persist(&path, unlocked)
+    bind_device(unlocked, &device);
+    sync::delete_item(&mut unlocked.data, &id, &unlocked.device_id).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)
 }
 
 #[tauri::command]
@@ -257,15 +365,17 @@ async fn change_master_password(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let (mut key_bytes, enabled) = {
         let mut guard = require_unlocked(&state)?;
         let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+        bind_device(unlocked, &device);
         let current = SecretString::new(current_password);
         let new_secret = SecretString::new(new_password);
         unlocked
             .change_master_password(&current, &new_secret)
             .map_err(err)?;
-        persist(&path, unlocked)?;
+        persist(&app, &path, unlocked)?;
         (
             unlocked.key.as_bytes().to_vec(),
             unlocked.data.settings.biometrics_enabled,
@@ -288,7 +398,8 @@ async fn change_master_password(
         let mut guard = require_unlocked(&state)?;
         let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
         unlocked.data.settings.biometrics_enabled = false;
-        persist(&path, unlocked)?;
+        unlocked.data.settings.touch();
+        persist(&app, &path, unlocked)?;
         remember_settings(&state, &unlocked.data.settings);
     }
     Ok(())
@@ -304,10 +415,13 @@ fn get_vault_settings(state: State<AppState>) -> Result<SettingsView, String> {
 #[tauri::command]
 fn update_vault_settings(app: AppHandle, state: State<AppState>, patch: SettingsPatch) -> Result<SettingsView, String> {
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
     unlocked.data.settings.apply_patch(&patch).map_err(err)?;
-    persist(&path, unlocked)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
     let settings = unlocked.data.settings.clone();
     drop(guard);
     remember_settings(&state, &settings);
@@ -342,11 +456,15 @@ async fn biometric_enable(app: AppHandle) -> Result<BiometricStatus, String> {
     .map_err(|e| e.to_string())?
     .map_err(err)?;
     let state = app.state::<AppState>();
+    let device = device_id(&app)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
     unlocked.data.settings.biometrics_enabled = true;
+    unlocked.data.settings.touch();
     state.biometrics_invalidated.store(false, Ordering::Relaxed);
-    persist(&path, unlocked)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
     remember_settings(&state, &unlocked.data.settings);
     Ok(biometric_view(&state))
 }
@@ -355,11 +473,15 @@ async fn biometric_enable(app: AppHandle) -> Result<BiometricStatus, String> {
 fn biometric_disable(app: AppHandle, state: State<AppState>) -> Result<BiometricStatus, String> {
     platform::delete_vault_key();
     let path = vault_path(&app)?;
+    let device = device_id(&app)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
     unlocked.data.settings.biometrics_enabled = false;
+    unlocked.data.settings.touch();
     state.biometrics_invalidated.store(false, Ordering::Relaxed);
-    persist(&path, unlocked)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
     remember_settings(&state, &unlocked.data.settings);
     Ok(biometric_view(&state))
 }
@@ -396,13 +518,17 @@ async fn biometric_unlock(app: AppHandle) -> Result<(), String> {
     bytes.zeroize();
     let key = key?;
     let path = vault_path(&app)?;
-    let unlocked = unlock_file_with_key(&path, &key).map_err(err)?;
+    let device = device_id(&app)?;
+    let mut unlocked = unlock_file_with_key(&path, &key).map_err(err)?;
     if password_unlock_expired_now(&unlocked.data.settings) {
         return Err(err(VaultError::MasterPasswordRequired));
     }
     if !unlocked.data.settings.biometrics_enabled {
         return Err(err(VaultError::BiometricsUnavailable));
     }
+    bind_device(&mut unlocked, &device);
+    unlocked.bound_path = path.clone();
+    sync::pull_vault(&path, &mut unlocked).map_err(err)?;
     remember_settings(&state, &unlocked.data.settings);
     let mut guard = require_unlocked(&state)?;
     *guard = Some(unlocked);
@@ -442,20 +568,162 @@ fn import_vault(
     mode: String,
 ) -> Result<(), String> {
     let vault_file = vault_path(&app)?;
+    let device = device_id(&app)?;
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let secret = SecretString::new(export_password);
     let imported = import_bytes(&bytes, &secret).map_err(err)?;
     let mut guard = require_unlocked(&state)?;
     let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
     match mode.as_str() {
         "replace" => unlocked.data = imported,
         "merge" => unlocked.data.merge(imported),
         _ => return Err("mode must be merge or replace".into()),
     }
     let settings = unlocked.data.settings.clone();
-    persist(&vault_file, unlocked)?;
+    unlocked.dirty = true;
+    persist(&app, &vault_file, unlocked)?;
     remember_settings(&state, &settings);
     Ok(())
+}
+
+#[tauri::command]
+fn sync_status(app: AppHandle) -> Result<SyncStatus, String> {
+    poll_desktop(&app);
+    let state = app.state::<AppState>();
+    let local = ensure_local(&app)?;
+    let guard = state.unlocked.lock().map_err(|_| "lock poisoned".to_string())?;
+    let unlocked = guard.as_ref();
+    Ok(sync::status_of(
+        &local.vault_path,
+        &local.device_id,
+        unlocked,
+        state.generation.load(Ordering::Relaxed),
+        unlocked.is_none(),
+    ))
+}
+
+#[tauri::command]
+fn sync_conflicts(state: State<AppState>) -> Result<Vec<ConflictView>, String> {
+    let guard = require_unlocked(&state)?;
+    let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
+    Ok(sync::list_conflicts(&unlocked.data))
+}
+
+#[tauri::command]
+fn resolve_sync_conflict(
+    app: AppHandle,
+    item_id: String,
+    conflict_id: String,
+    action: String,
+) -> Result<(), String> {
+    let path = vault_path(&app)?;
+    let device = device_id(&app)?;
+    let state = app.state::<AppState>();
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
+    sync::resolve_conflict(&mut unlocked.data, &item_id, &conflict_id, &action, &unlocked.device_id)
+        .map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)
+}
+
+#[tauri::command]
+fn set_vault_location(app: AppHandle, path: String, mode: String) -> Result<SyncStatus, String> {
+    let dest = sync::normalize_path(&sync::user_path(&path));
+    sync::require_absolute(&dest).map_err(err)?;
+    let state = app.state::<AppState>();
+    match mode.as_str() {
+        "move" => {
+            let src = vault_path(&app)?;
+            let device = device_id(&app)?;
+            {
+                let mut guard = require_unlocked(&state)?;
+                let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+                bind_device(unlocked, &device);
+                unlocked.dirty = true;
+                persist(&app, &src, unlocked)?;
+                unlocked.bound_path = dest.clone();
+            }
+            if let Err(error) = sync::relocate_vault_file(&src, &dest) {
+                if let Ok(mut guard) = state.unlocked.lock() {
+                    if let Some(unlocked) = guard.as_mut() {
+                        unlocked.bound_path = src;
+                    }
+                }
+                return Err(err(error));
+            }
+            remember_vault_path(&app, dest)?;
+        }
+        "open" => {
+            let exists = dest.exists();
+            let placeholder = sync::icloud_placeholder(&dest).is_some_and(|candidate| candidate.exists());
+            if !exists && placeholder {
+                sync::prompt_icloud_download(&dest);
+                {
+                    let mut guard = require_unlocked(&state)?;
+                    *guard = None;
+                }
+                remember_vault_path(&app, dest)?;
+                return sync_status(app);
+            }
+            if !exists {
+                return Err(err(VaultError::NotFound));
+            }
+            let key = {
+                let guard = require_unlocked(&state)?;
+                let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
+                unlocked.key.clone()
+            };
+            match vault::unlock_file_with_key(&dest, &key) {
+                Ok(opened) => {
+                    let device = device_id(&app)?;
+                    {
+                        let mut guard = require_unlocked(&state)?;
+                        let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+                        unlocked.data = opened.data;
+                        unlocked.stamp = opened.stamp;
+                        unlocked.dirty = false;
+                        unlocked.pending_password_files.clear();
+                        unlocked.waiting_icloud = false;
+                        unlocked.sync_error = None;
+                        bind_device(unlocked, &device);
+                        unlocked.bound_path = dest.clone();
+                    }
+                    remember_vault_path(&app, dest)?;
+                    state.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error) if foreign_password(&error) => {
+                    {
+                        let mut guard = require_unlocked(&state)?;
+                        *guard = None;
+                    }
+                    remember_vault_path(&app, dest)?;
+                    return Err(err(VaultError::SyncPasswordRequired));
+                }
+                Err(error) => return Err(err(error)),
+            }
+        }
+        _ => return Err("mode must be move or open".into()),
+    }
+    sync_status(app)
+}
+
+#[tauri::command]
+fn merge_sync_password(app: AppHandle, path: String, password: String) -> Result<(), String> {
+    let foreign = sync::normalize_path(&sync::user_path(&path));
+    sync::require_absolute(&foreign).map_err(err)?;
+    let main = vault_path(&app)?;
+    let device = device_id(&app)?;
+    let state = app.state::<AppState>();
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
+    let secret = SecretString::new(password);
+    sync::merge_with_password(&main, &foreign, &secret, unlocked).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &main, unlocked)
 }
 
 #[tauri::command]
@@ -497,6 +765,8 @@ pub fn run() {
             password_verified: AtomicBool::new(false),
             settings: Mutex::new(VaultSettings::default()),
             biometrics_invalidated: AtomicBool::new(false),
+            local: Mutex::new(None),
+            generation: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             vault_exists,
@@ -520,6 +790,11 @@ pub fn run() {
             biometric_enable,
             biometric_disable,
             biometric_unlock,
+            sync_status,
+            sync_conflicts,
+            resolve_sync_conflict,
+            set_vault_location,
+            merge_sync_password,
             mcp_host::mcp_get_settings,
             mcp_host::mcp_set_settings,
             mcp_host::mcp_issue_token,
@@ -529,6 +804,11 @@ pub fn run() {
         ])
         .setup(|app| {
             platform::start_screen_lock_watcher(app.handle().clone());
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(sync::SYNC_POLL_SECS));
+                poll_desktop(&handle);
+            });
             if let Err(err) = mcp_host::install(app.handle()) {
                 eprintln!("keyhaven mcp: {err}");
             }
