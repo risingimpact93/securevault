@@ -124,6 +124,15 @@ pub enum VaultError {
     InvalidSecretKeyChecksum,
     #[error("secret key store unavailable")]
     SecretKeyStoreUnavailable,
+    /// This device is not the Secret Key manager. The string is the manager's display name.
+    #[error("관리 기기({0})에서만 변경할 수 있어요")]
+    NotSecretKeyManager(String),
+    #[error("관리 기기가 없습니다")]
+    NoSecretKeyManager,
+    #[error("등록되지 않은 기기입니다")]
+    UnknownDevice,
+    #[error("기기 ID가 없습니다")]
+    DeviceIdRequired,
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -218,6 +227,9 @@ pub struct ItemBody {
     pub cvv: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Fields this build does not know. Kept so a newer payload can be re-saved.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// A version that lost the merge.
@@ -264,6 +276,9 @@ pub struct Tombstone {
     pub order_updated_by: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub order_versions: BTreeMap<String, u64>,
+    /// Fields this build does not know. Kept so a newer tombstone can be re-saved.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +333,9 @@ pub struct VaultItem {
     pub order_updated_by: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub order_versions: BTreeMap<String, u64>,
+    /// Fields this build does not know. Kept so a newer item can be re-saved.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl VaultItem {
@@ -346,6 +364,7 @@ impl VaultItem {
             order_updated_at: String::new(),
             order_updated_by: None,
             order_versions: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 
@@ -364,6 +383,7 @@ impl VaultItem {
             expiry: self.expiry.clone(),
             cvv: self.cvv.clone(),
             tags: self.tags.clone(),
+            extra: BTreeMap::new(),
         }
     }
 
@@ -411,6 +431,9 @@ pub struct VaultSettings {
     /// When the preference fields above were last changed. Password-unlock stamps do not move this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_updated_at: Option<String>,
+    /// Fields this build does not know. Kept so a newer settings object can be re-saved.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for VaultSettings {
@@ -422,6 +445,7 @@ impl Default for VaultSettings {
             password_interval_days: DEFAULT_PASSWORD_INTERVAL_DAYS,
             last_password_unlock_at: None,
             settings_updated_at: None,
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -575,6 +599,38 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+/// One install that has opened this vault. Synced inside the encrypted payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRecord {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_seen: String,
+}
+
+/// What the settings screen shows about this install and the Secret Key manager.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceManagerStatus {
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager_device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager_device_name: Option<String>,
+    /// False only when a manager is set and it is a different device.
+    pub can_change_secret_key: bool,
+    /// No `managerDeviceId` in the payload. Older apps, and 0.3.1 re-saves, look like this.
+    pub manager_missing: bool,
+    pub is_manager: bool,
+    /// Set when this device must not enable, rotate, or disable the Secret Key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    pub devices: Vec<DeviceRecord>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct VaultData {
     pub items: Vec<VaultItem>,
@@ -589,6 +645,120 @@ pub struct VaultData {
     pub device_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<Tombstone>,
+    /// Device allowed to enable, rotate, or disable the Secret Key.
+    /// Empty means no manager: any device may change it (0.2.x / 0.3.0 / 0.3.1 vaults).
+    #[serde(default, skip_serializing_if = "String::is_empty", rename = "managerDeviceId")]
+    pub manager_device_id: String,
+    /// When `manager_device_id` was last assigned. Merge is last-writer-wins on this stamp.
+    #[serde(default, skip_serializing_if = "String::is_empty", rename = "managerUpdatedAt")]
+    pub manager_updated_at: String,
+    /// Devices that have unlocked this vault. Merged per id by `lastSeen`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "deviceRegistry")]
+    pub device_registry: Vec<DeviceRecord>,
+    /// Fields this build does not know. Kept so a newer payload can be re-saved.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl VaultData {
+    pub fn manager_id(&self) -> Option<&str> {
+        let id = self.manager_device_id.trim();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    pub fn device_record(&self, id: &str) -> Option<&DeviceRecord> {
+        self.device_registry.iter().find(|device| device.id == id)
+    }
+
+    pub fn device_display_name(&self, id: &str) -> String {
+        self.device_record(id)
+            .map(|device| device.name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(id)
+            .to_string()
+    }
+
+    /// Absent manager keeps the pre-0.3.2 rule: every device may change the Secret Key.
+    pub fn allows_secret_key_change(&self, device_id: &str) -> bool {
+        match self.manager_id() {
+            None => true,
+            Some(manager) => {
+                let device_id = device_id.trim();
+                !device_id.is_empty() && manager == device_id
+            }
+        }
+    }
+}
+
+/// Keep keys only the loser has. Conflicting keys stay with `winner`.
+pub fn merge_unknown_fields(
+    winner: &mut BTreeMap<String, serde_json::Value>,
+    loser: &BTreeMap<String, serde_json::Value>,
+) {
+    for (key, value) in loser {
+        winner.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+/// macOS ComputerName, then `hostname`. Empty results are skipped.
+pub fn local_device_name() -> String {
+    if let Some(name) = command_stdout("scutil", &["--get", "ComputerName"]) {
+        return name;
+    }
+    if let Some(name) = command_stdout("hostname", &[]) {
+        return name;
+    }
+    "이 기기".to_string()
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(output.stdout).ok()?;
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Insert or refresh this install in the synced registry.
+pub fn register_device(data: &mut VaultData, device_id: &str, name: &str) {
+    let device_id = device_id.trim();
+    if device_id.is_empty() {
+        return;
+    }
+    let name = {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            device_id.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let now = now_rfc3339();
+    if let Some(existing) = data.device_registry.iter_mut().find(|device| device.id == device_id) {
+        existing.name = name;
+        existing.last_seen = now;
+    } else {
+        data.device_registry.push(DeviceRecord {
+            id: device_id.to_string(),
+            name,
+            last_seen: now,
+        });
+    }
+    data.device_registry.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+pub fn note_local_device(unlocked: &mut UnlockedVault) {
+    register_device(&mut unlocked.data, &unlocked.device_id, &local_device_name());
 }
 
 impl VaultData {
@@ -688,10 +858,96 @@ impl UnlockedVault {
         Ok(())
     }
 
+    pub fn device_manager_status(&self) -> DeviceManagerStatus {
+        let device_id = self.device_id.trim().to_string();
+        let registered = self.data.device_display_name(&device_id);
+        let device_name = if device_id.is_empty() {
+            local_device_name()
+        } else if registered == device_id {
+            local_device_name()
+        } else {
+            registered
+        };
+        let manager_device_id = self.data.manager_id().map(str::to_string);
+        let manager_device_name = manager_device_id
+            .as_deref()
+            .map(|id| self.data.device_display_name(id));
+        let manager_missing = manager_device_id.is_none();
+        let is_manager = manager_device_id.as_deref() == Some(device_id.as_str()) && !device_id.is_empty();
+        let can_change_secret_key = self.data.allows_secret_key_change(&device_id);
+        let notice = if can_change_secret_key {
+            None
+        } else {
+            manager_device_name
+                .clone()
+                .map(|name| format!("관리 기기({name})에서만 변경할 수 있어요"))
+        };
+        DeviceManagerStatus {
+            device_id,
+            device_name,
+            manager_device_id,
+            manager_device_name,
+            can_change_secret_key,
+            manager_missing,
+            is_manager,
+            notice,
+            devices: self.data.device_registry.clone(),
+        }
+    }
+
+    pub fn ensure_secret_key_change(&self) -> Result<(), VaultError> {
+        if self.data.allows_secret_key_change(&self.device_id) {
+            return Ok(());
+        }
+        let manager = self.data.manager_id().unwrap_or("");
+        let name = self.data.device_display_name(manager);
+        Err(VaultError::NotSecretKeyManager(name))
+    }
+
+    fn assign_manager(&mut self, device_id: &str) {
+        self.data.manager_device_id = device_id.to_string();
+        self.data.manager_updated_at = now_rfc3339();
+    }
+
+    fn ensure_known_device(&self) -> Result<String, VaultError> {
+        let device_id = self.device_id.trim();
+        if device_id.is_empty() {
+            Err(VaultError::DeviceIdRequired)
+        } else {
+            Ok(device_id.to_string())
+        }
+    }
+
+    fn verify_password_and_secret_key(
+        &self,
+        password: &SecretString,
+        secret_key: &crate::secret_key::SecretKey,
+    ) -> Result<(), VaultError> {
+        if !self.sk_enabled() {
+            return Err(VaultError::SecretKeyRequired);
+        }
+        if let Some(fp) = self.sk_fingerprint {
+            if secret_key.fingerprint() != fp {
+                return Err(VaultError::SecretKeyMismatch);
+            }
+        } else if let Some(current) = &self.secret_key {
+            if secret_key.fingerprint() != current.fingerprint() {
+                return Err(VaultError::SecretKeyMismatch);
+            }
+        }
+        let argon = derive_key(password, &self.salt, &self.params)?;
+        let derived = crate::secret_key::apply_2skd(&argon, secret_key)?;
+        if derived.as_bytes() != self.key.as_bytes() {
+            return Err(VaultError::WrongPassword);
+        }
+        Ok(())
+    }
+
     pub fn enable_secret_key(
         &mut self,
         password: &SecretString,
     ) -> Result<crate::secret_key::SecretKey, VaultError> {
+        self.ensure_secret_key_change()?;
         if self.sk_enabled() {
             return Err(VaultError::AlreadyExists);
         }
@@ -701,6 +957,12 @@ impl UnlockedVault {
         self.key = crate::secret_key::apply_2skd(&argon, &sk)?;
         self.sk_fingerprint = Some(sk.fingerprint());
         self.secret_key = Some(sk.clone());
+        if let Ok(device_id) = self.ensure_known_device() {
+            if self.data.device_record(&device_id).is_none() {
+                register_device(&mut self.data, &device_id, &local_device_name());
+            }
+            self.assign_manager(&device_id);
+        }
         Ok(sk)
     }
 
@@ -709,22 +971,68 @@ impl UnlockedVault {
         password: &SecretString,
         secret_key: &crate::secret_key::SecretKey,
     ) -> Result<(), VaultError> {
+        self.ensure_secret_key_change()?;
         if !self.sk_enabled() {
             return Ok(());
         }
-        if let Some(fp) = self.sk_fingerprint {
-            if secret_key.fingerprint() != fp {
-                return Err(VaultError::SecretKeyMismatch);
-            }
-        }
+        self.verify_password_and_secret_key(password, secret_key)?;
         let argon = derive_key(password, &self.salt, &self.params)?;
-        let current = crate::secret_key::apply_2skd(&argon, secret_key)?;
-        if current.as_bytes() != self.key.as_bytes() {
-            return Err(VaultError::WrongPassword);
-        }
         self.key = argon;
         self.secret_key = None;
         self.sk_fingerprint = None;
+        Ok(())
+    }
+
+    /// Claim the manager role when the vault has a Secret Key and no manager yet.
+    pub fn designate_manager(
+        &mut self,
+        password: &SecretString,
+        secret_key: &crate::secret_key::SecretKey,
+    ) -> Result<(), VaultError> {
+        if self.data.manager_id().is_some() {
+            return self.ensure_secret_key_change().and_then(|_| {
+                if self.data.allows_secret_key_change(&self.device_id) {
+                    Ok(())
+                } else {
+                    Err(VaultError::NoSecretKeyManager)
+                }
+            });
+        }
+        let device_id = self.ensure_known_device()?;
+        self.verify_password_and_secret_key(password, secret_key)?;
+        if self.data.device_record(&device_id).is_none() {
+            register_device(&mut self.data, &device_id, &local_device_name());
+        }
+        self.assign_manager(&device_id);
+        Ok(())
+    }
+
+    /// Become the manager from another device by proving the master password and current Secret Key.
+    pub fn takeover_manager(
+        &mut self,
+        password: &SecretString,
+        secret_key: &crate::secret_key::SecretKey,
+    ) -> Result<(), VaultError> {
+        let device_id = self.ensure_known_device()?;
+        self.verify_password_and_secret_key(password, secret_key)?;
+        if self.data.device_record(&device_id).is_none() {
+            register_device(&mut self.data, &device_id, &local_device_name());
+        }
+        self.assign_manager(&device_id);
+        Ok(())
+    }
+
+    /// The current manager assigns the role to another device already in the registry.
+    pub fn handover_manager(&mut self, target_device_id: &str) -> Result<(), VaultError> {
+        let target = target_device_id.trim();
+        if target.is_empty() || self.data.device_record(target).is_none() {
+            return Err(VaultError::UnknownDevice);
+        }
+        if self.data.manager_id().is_none() {
+            return Err(VaultError::NoSecretKeyManager);
+        }
+        self.ensure_secret_key_change()?;
+        self.assign_manager(target);
         Ok(())
     }
 
@@ -737,6 +1045,7 @@ impl UnlockedVault {
         password: &SecretString,
         current: &crate::secret_key::SecretKey,
     ) -> Result<crate::secret_key::SecretKey, VaultError> {
+        self.ensure_secret_key_change()?;
         if !self.sk_enabled() {
             return Err(VaultError::SecretKeyRequired);
         }
@@ -1861,6 +2170,7 @@ mod tests {
 
         let mut loaded =
             unlock_file_with_secret_key(&path, &password, Some(&sk.format_display()), None).unwrap();
+        loaded.device_id = unlocked.device_id.clone();
         loaded.disable_secret_key(&password, &sk).unwrap();
         persist_unlocked(&path, &mut loaded).unwrap();
         let disabled = parse_encrypted(&fs::read(&path).unwrap()).unwrap();
@@ -2053,5 +2363,261 @@ mod tests {
             unlock_file_with_secret_key(&path, &secret("nope"), Some(&new_sk.format_display()), None)
                 .unwrap_err();
         assert!(matches!(wrong_pw, VaultError::WrongPassword));
+    }
+
+    fn memory_vault(password: &str, device: &str) -> UnlockedVault {
+        let params = default_kdf_params();
+        let salt = random_salt().to_vec();
+        let key = derive_key(&secret(password), &salt, &params).unwrap();
+        let mut unlocked = fresh_unlocked(key, salt, params, VaultData::default());
+        unlocked.device_id = device.to_string();
+        unlocked
+    }
+
+    fn device(id: &str, name: &str, last_seen: &str) -> DeviceRecord {
+        DeviceRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            last_seen: last_seen.to_string(),
+        }
+    }
+
+    #[test]
+    fn non_manager_cannot_enable_rotate_or_disable() {
+        let password = secret("manager-gate");
+        let mut manager = memory_vault("manager-gate", "device-a");
+        register_device(&mut manager.data, "device-a", "작업실");
+        let sk = manager.enable_secret_key(&password).unwrap();
+        assert_eq!(manager.data.manager_id(), Some("device-a"));
+        let display = sk.format_display();
+
+        let mut other = manager;
+        other.device_id = "device-b".to_string();
+        let enable_err = other.enable_secret_key(&password).unwrap_err();
+        assert_eq!(enable_err.to_string(), "관리 기기(작업실)에서만 변경할 수 있어요");
+        let rotate_err = other.rotate_secret_key(&password, &sk).unwrap_err();
+        assert!(matches!(rotate_err, VaultError::NotSecretKeyManager(_)));
+        let disable_err = other.disable_secret_key(&secret("wrong"), &sk).unwrap_err();
+        assert!(matches!(disable_err, VaultError::NotSecretKeyManager(_)));
+        assert!(other.sk_enabled());
+        assert_eq!(
+            other.secret_key.as_ref().map(|key| key.format_display()).as_deref(),
+            Some(display.as_str())
+        );
+        assert_eq!(other.data.manager_id(), Some("device-a"));
+    }
+
+    #[test]
+    fn vault_without_manager_lets_any_device_change_secret_key() {
+        let json = r#"{"items":[],"revision":3,"device_id":"legacy"}"#;
+        let data: VaultData = serde_json::from_str(json).unwrap();
+        assert!(data.manager_id().is_none());
+        assert!(data.allows_secret_key_change("device-a"));
+        assert!(data.allows_secret_key_change("device-b"));
+
+        let password = secret("legacy-open");
+        let mut first = memory_vault("legacy-open", "");
+        let sk = first.enable_secret_key(&password).unwrap();
+        assert!(first.data.manager_id().is_none(), "an unnamed install does not lock the role");
+        first.device_id = "device-b".to_string();
+        let rotated = first.rotate_secret_key(&password, &sk).unwrap();
+        first.disable_secret_key(&password, &rotated).unwrap();
+        assert!(!first.sk_enabled());
+        first.device_id = "device-c".to_string();
+        let again = first.enable_secret_key(&password).unwrap();
+        assert_eq!(first.data.manager_id(), Some("device-c"));
+        assert!(again.format_display().starts_with("SV1-"));
+    }
+
+    #[test]
+    fn designate_manager_when_none_requires_password_and_secret_key() {
+        let password = secret("designate-pw");
+        let mut vault = memory_vault("designate-pw", "device-a");
+        let sk = vault.enable_secret_key(&password).unwrap();
+        vault.data.manager_device_id.clear();
+        vault.data.manager_updated_at.clear();
+        assert!(vault.data.manager_id().is_none());
+        vault.device_id = "device-b".to_string();
+
+        let wrong = vault.designate_manager(&secret("nope"), &sk).unwrap_err();
+        assert!(matches!(wrong, VaultError::WrongPassword));
+        assert!(vault.data.manager_id().is_none());
+
+        vault.designate_manager(&password, &sk).unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-b"));
+        assert!(!vault.data.manager_updated_at.is_empty());
+
+        vault.device_id = "device-a".to_string();
+        let blocked = vault.designate_manager(&password, &sk).unwrap_err();
+        assert!(matches!(blocked, VaultError::NotSecretKeyManager(_)));
+        let blocked_change = vault.rotate_secret_key(&password, &sk).unwrap_err();
+        assert!(matches!(blocked_change, VaultError::NotSecretKeyManager(_)));
+    }
+
+    #[test]
+    fn takeover_and_handover_move_the_manager() {
+        let password = secret("hand-pw");
+        let mut vault = memory_vault("hand-pw", "device-a");
+        register_device(&mut vault.data, "device-a", "작업실");
+        register_device(&mut vault.data, "device-b", "여행용");
+        let sk = vault.enable_secret_key(&password).unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-a"));
+
+        let unknown = vault.handover_manager("missing").unwrap_err();
+        assert!(matches!(unknown, VaultError::UnknownDevice));
+
+        vault.handover_manager("device-b").unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-b"));
+        let cannot_hand_back = vault.handover_manager("device-a").unwrap_err();
+        assert!(matches!(cannot_hand_back, VaultError::NotSecretKeyManager(_)));
+
+        let wrong = vault.takeover_manager(&password, &crate::secret_key::SecretKey::generate()).unwrap_err();
+        assert!(matches!(wrong, VaultError::SecretKeyMismatch));
+        assert_eq!(vault.data.manager_id(), Some("device-b"));
+
+        vault.takeover_manager(&password, &sk).unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-a"));
+        vault.rotate_secret_key(&password, &sk).unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-a"));
+    }
+
+    #[test]
+    fn disable_keeps_manager_so_only_that_device_can_enable_again() {
+        let password = secret("keep-manager");
+        let mut vault = memory_vault("keep-manager", "device-a");
+        register_device(&mut vault.data, "device-a", "작업실");
+        let sk = vault.enable_secret_key(&password).unwrap();
+        vault.disable_secret_key(&password, &sk).unwrap();
+        assert!(!vault.sk_enabled());
+        assert_eq!(vault.data.manager_id(), Some("device-a"));
+        vault.device_id = "device-b".to_string();
+        let err = vault.enable_secret_key(&password).unwrap_err();
+        assert!(matches!(err, VaultError::NotSecretKeyManager(_)));
+        vault.device_id = "device-a".to_string();
+        vault.enable_secret_key(&password).unwrap();
+        assert_eq!(vault.data.manager_id(), Some("device-a"));
+    }
+
+    #[test]
+    fn unknown_payload_item_and_settings_fields_roundtrip() {
+        let mut value = serde_json::to_value(VaultData {
+            items: vec![sample_item()],
+            ..VaultData::default()
+        })
+        .unwrap();
+        value["futurePayload"] = serde_json::json!("keep");
+        value["settings"]["futureSetting"] = serde_json::json!(9);
+        value["items"][0]["futureItem"] = serde_json::json!(true);
+        value["items"][0]["conflicts"] = serde_json::json!([{
+            "id": "c1",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "deleted": false,
+            "itemType": "login",
+            "title": "t",
+            "futureConflict": "c"
+        }]);
+        value["tombstones"] = serde_json::json!([{
+            "id": "tomb",
+            "updatedAt": "2026-01-02T00:00:00Z",
+            "futureTomb": 1,
+            "body": {"itemType": "note", "title": "gone", "futureBody": "b"}
+        }]);
+        let parsed: VaultData = serde_json::from_value(value).unwrap();
+        let again = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(again["futurePayload"], "keep");
+        assert_eq!(again["settings"]["futureSetting"], 9);
+        assert_eq!(again["items"][0]["futureItem"], true);
+        assert_eq!(again["items"][0]["conflicts"][0]["futureConflict"], "c");
+        assert_eq!(again["tombstones"][0]["futureTomb"], 1);
+        assert_eq!(again["tombstones"][0]["body"]["futureBody"], "b");
+
+        let password = secret("extra-roundtrip");
+        let params = default_kdf_params();
+        let salt = random_salt();
+        let key = derive_key(&password, &salt, &params).unwrap();
+        let enc = encrypt_data(&parsed, &key, &params, &salt).unwrap();
+        let out = decrypt_data(&enc, &key).unwrap();
+        assert_eq!(out.extra.get("futurePayload").and_then(|v| v.as_str()), Some("keep"));
+        assert_eq!(out.settings.extra.get("futureSetting").and_then(|v| v.as_i64()), Some(9));
+        assert_eq!(out.items[0].extra.get("futureItem").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            out.items[0].conflicts[0].body.extra.get("futureConflict").and_then(|v| v.as_str()),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn manager_fields_are_inside_the_ciphertext_not_the_header() {
+        let password = secret("inside-payload");
+        let mut vault = memory_vault("inside-payload", "device-a");
+        register_device(&mut vault.data, "device-a", "작업실");
+        let _sk = vault.enable_secret_key(&password).unwrap();
+        vault.data.extra.insert("futurePayload".into(), serde_json::json!("hidden"));
+        let enc = encrypt_unlocked(&vault).unwrap();
+        let bytes = serialize_encrypted(&enc).unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(header.get("managerDeviceId").is_none());
+        assert!(header.get("deviceRegistry").is_none());
+        assert!(header.get("managerUpdatedAt").is_none());
+        let data = decrypt_data(&enc, &vault.key).unwrap();
+        assert_eq!(data.manager_id(), Some("device-a"));
+        assert_eq!(data.device_registry[0].name, "작업실");
+        assert_eq!(data.extra.get("futurePayload").and_then(|v| v.as_str()), Some("hidden"));
+    }
+
+    #[test]
+    fn merge_manager_is_last_writer_wins_and_registry_merges_by_last_seen() {
+        let mut local = VaultData::default();
+        local.manager_device_id = "aaa".into();
+        local.manager_updated_at = "2026-01-01T00:00:00Z".into();
+        local.device_registry = vec![
+            device("aaa", "Old", "2026-01-01T00:00:00Z"),
+            device("bbb", "B", "2026-02-01T00:00:00Z"),
+        ];
+        local.extra.insert("onlyLocal".into(), serde_json::json!(1));
+        local.extra.insert("both".into(), serde_json::json!("local"));
+        local.revision = 1;
+        local.device_id = "writer-a".into();
+
+        let mut remote = VaultData::default();
+        remote.manager_device_id = "bbb".into();
+        remote.manager_updated_at = "2026-03-01T00:00:00Z".into();
+        remote.device_registry = vec![
+            device("bbb", "B2", "2026-04-01T00:00:00Z"),
+            device("ccc", "C", "2026-01-01T00:00:00Z"),
+        ];
+        remote.extra.insert("onlyRemote".into(), serde_json::json!(2));
+        remote.extra.insert("both".into(), serde_json::json!("remote"));
+        remote.revision = 4;
+        remote.device_id = "writer-b".into();
+
+        let mut flipped = remote.clone();
+        local.merge(remote);
+        assert_eq!(local.manager_device_id, "bbb");
+        assert_eq!(local.manager_updated_at, "2026-03-01T00:00:00Z");
+        assert_eq!(local.device_registry.iter().find(|d| d.id == "bbb").unwrap().name, "B2");
+        assert!(local.device_registry.iter().any(|d| d.id == "aaa" && d.name == "Old"));
+        assert!(local.device_registry.iter().any(|d| d.id == "ccc"));
+        assert_eq!(local.extra.get("onlyLocal").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(local.extra.get("onlyRemote").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(local.extra.get("both").and_then(|v| v.as_str()), Some("remote"));
+
+        let mut tied_left = VaultData::default();
+        tied_left.manager_device_id = "device-a".into();
+        tied_left.manager_updated_at = "2026-05-01T00:00:00Z".into();
+        let mut tied_right = VaultData::default();
+        tied_right.manager_device_id = "device-m".into();
+        tied_right.manager_updated_at = "2026-05-01T00:00:00Z".into();
+        let mut right_first = tied_right.clone();
+        let left_copy = tied_left.clone();
+        tied_left.merge(tied_right);
+        right_first.merge(left_copy);
+        assert_eq!(tied_left.manager_device_id, "device-m");
+        assert_eq!(right_first.manager_device_id, "device-m");
+
+        let mut bare = VaultData::default();
+        flipped.manager_updated_at = "2026-06-01T00:00:00Z".into();
+        bare.merge(flipped);
+        assert_eq!(bare.manager_device_id, "bbb");
     }
 }

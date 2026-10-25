@@ -72,6 +72,7 @@ fn accept_password_unlock(app: &AppHandle, state: &AppState, mut unlocked: Unloc
         state.biometrics_invalidated.store(false, Ordering::Relaxed);
     }
     bind_device(&mut unlocked, &device);
+    vault::note_local_device(&mut unlocked);
     mark_password_unlock(&mut unlocked.data);
     unlocked.bound_path = path.clone();
     persist(app, &path, &mut unlocked)?;
@@ -533,6 +534,65 @@ async fn rotate_secret_key(
 }
 
 #[tauri::command]
+fn device_manager_status(app: AppHandle) -> Result<vault::DeviceManagerStatus, String> {
+    let state = app.state::<AppState>();
+    let device = device_id(&app)?;
+    let guard = require_unlocked(&state)?;
+    let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
+    let mut view = unlocked.device_manager_status();
+    if view.device_id.is_empty() {
+        view.device_id = device;
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+fn designate_manager(app: AppHandle, password: String, secret_key: String) -> Result<vault::DeviceManagerStatus, String> {
+    let path = vault_path(&app)?;
+    let secret = SecretString::new(password);
+    let sk = SecretKey::parse(&secret_key).map_err(err)?;
+    let state = app.state::<AppState>();
+    let device = device_id(&app)?;
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
+    unlocked.designate_manager(&secret, &sk).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
+    Ok(unlocked.device_manager_status())
+}
+
+#[tauri::command]
+fn takeover_manager(app: AppHandle, password: String, secret_key: String) -> Result<vault::DeviceManagerStatus, String> {
+    let path = vault_path(&app)?;
+    let secret = SecretString::new(password);
+    let sk = SecretKey::parse(&secret_key).map_err(err)?;
+    let state = app.state::<AppState>();
+    let device = device_id(&app)?;
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &device);
+    unlocked.takeover_manager(&secret, &sk).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
+    Ok(unlocked.device_manager_status())
+}
+
+#[tauri::command]
+fn handover_manager(app: AppHandle, device_id: String) -> Result<vault::DeviceManagerStatus, String> {
+    let path = vault_path(&app)?;
+    let state = app.state::<AppState>();
+    let local_device = ensure_local(&app)?.device_id;
+    let mut guard = require_unlocked(&state)?;
+    let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+    bind_device(unlocked, &local_device);
+    unlocked.handover_manager(&device_id).map_err(err)?;
+    unlocked.dirty = true;
+    persist(&app, &path, unlocked)?;
+    Ok(unlocked.device_manager_status())
+}
+
+#[tauri::command]
 fn reveal_secret_key(app: AppHandle, password: String) -> Result<EmergencyKitView, String> {
     let path = vault_path(&app)?;
     let store = sk_store(&app)?;
@@ -886,6 +946,9 @@ async fn biometric_unlock(app: AppHandle) -> Result<(), String> {
     unlocked.bound_path = path.clone();
     prepare_sync(&app, &mut unlocked)?;
     sync::pull_vault(&path, &mut unlocked).map_err(err)?;
+    vault::note_local_device(&mut unlocked);
+    unlocked.dirty = true;
+    persist(&app, &path, &mut unlocked)?;
     remember_settings(&state, &unlocked.data.settings);
     let mut guard = require_unlocked(&state)?;
     *guard = Some(unlocked);
@@ -1309,6 +1372,10 @@ pub fn run() {
             disable_secret_key,
             rotate_secret_key,
             reveal_secret_key,
+            device_manager_status,
+            designate_manager,
+            takeover_manager,
+            handover_manager,
             lock,
             is_unlocked,
             list_items,

@@ -3942,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "securevault"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "block2",
  "bytes",
@@ -3985,7 +3985,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-web"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "base64 0.22.1",

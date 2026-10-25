@@ -7,8 +7,11 @@ import {
   changeMasterPassword,
   copyToClipboard,
   deleteItem,
+  designateManager,
+  deviceManagerStatus,
   disableSecretKey,
   enableSecretKey,
+  handoverManager,
   exportVault,
   generatePassword,
   getVaultSettings,
@@ -20,6 +23,7 @@ import {
   revealSecretKey,
   rotateSecretKey,
   secretKeyStatus,
+  takeoverManager,
   updateItem,
   updateVaultSettings,
 } from "../api";
@@ -31,6 +35,7 @@ import type {
   ItemDraft,
   ItemType,
   EmergencyKit as EmergencyKitData,
+  DeviceManagerStatus,
   SettingsPatch,
   SyncStatus,
   Toast,
@@ -947,7 +952,7 @@ const AUTO_LOCK_CHOICES: { value: number; label: string }[] = [
   { value: 60, label: "1시간" },
 ];
 
-function SettingsPanel({
+export function SettingsPanel({
   settings,
   syncStatus,
   onSettingsChange,
@@ -981,6 +986,10 @@ function SettingsPanel({
   const [skValue, setSkValue] = useState("");
   const [rotatePassword, setRotatePassword] = useState("");
   const [rotateKey, setRotateKey] = useState("");
+  const [device, setDevice] = useState<DeviceManagerStatus | null>(null);
+  const [claimPassword, setClaimPassword] = useState("");
+  const [claimKey, setClaimKey] = useState("");
+  const [handoverId, setHandoverId] = useState("");
 
   useEffect(() => {
     setIntervalDays(String(settings.passwordIntervalDays));
@@ -1005,10 +1014,25 @@ function SettingsPanel({
         if (!cancelled) setSkEnabled(status.enabled);
       })
       .catch(() => undefined);
+    void deviceManagerStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setDevice(status);
+          const others = status.devices.filter((entry) => entry.id !== status.deviceId);
+          setHandoverId((current) => current || others[0]?.id || "");
+        }
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, []);
+
+  function rememberDevice(next: DeviceManagerStatus) {
+    setDevice(next);
+    const others = next.devices.filter((entry) => entry.id !== next.deviceId);
+    setHandoverId((current) => (others.some((entry) => entry.id === current) ? current : others[0]?.id || ""));
+  }
 
   async function savePatch(patch: SettingsPatch) {
     try {
@@ -1046,6 +1070,7 @@ function SettingsPanel({
       const nextKit = await enableSecretKey(skPassword);
       setSkPassword("");
       setSkEnabled(true);
+      rememberDevice(await deviceManagerStatus());
       onKit(nextKit, false);
       onToast({ kind: "ok", message: "Secret Key를 켰습니다. 비상 키트를 보관하세요." });
     } catch (err) {
@@ -1087,6 +1112,7 @@ function SettingsPanel({
       setSkPassword("");
       setSkValue("");
       setSkEnabled(true);
+      rememberDevice(await deviceManagerStatus());
       onKit(nextKit, false);
       onToast({ kind: "ok", message: "Secret Key를 교체했습니다. 새 비상 키트를 보관하세요." });
     } catch (err) {
@@ -1104,11 +1130,77 @@ function SettingsPanel({
       setSkPassword("");
       setSkValue("");
       setSkEnabled(false);
+      rememberDevice(await deviceManagerStatus());
       onToast({ kind: "ok", message: "Secret Key를 껐습니다." });
     } catch (err) {
       onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
     } finally {
       setSkBusy(false);
+    }
+  }
+
+  async function handleDesignate(e: FormEvent) {
+    e.preventDefault();
+    if (!claimPassword || !claimKey.trim()) {
+      onToast({ kind: "err", message: "마스터 비밀번호와 현재 Secret Key를 입력하세요." });
+      return;
+    }
+    setSkBusy(true);
+    try {
+      rememberDevice(await designateManager(claimPassword, claimKey.trim()));
+      setClaimPassword("");
+      setClaimKey("");
+      onToast({ kind: "ok", message: "이 기기를 관리 기기로 지정했습니다." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function handleTakeover(e: FormEvent) {
+    e.preventDefault();
+    if (!claimPassword || !claimKey.trim()) {
+      onToast({ kind: "err", message: "마스터 비밀번호와 현재 Secret Key를 입력하세요." });
+      return;
+    }
+    setSkBusy(true);
+    try {
+      rememberDevice(await takeoverManager(claimPassword, claimKey.trim()));
+      setClaimPassword("");
+      setClaimKey("");
+      onToast({ kind: "ok", message: "관리 기기를 이 기기로 넘겨받았습니다." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function handleHandover(e: FormEvent) {
+    e.preventDefault();
+    if (!handoverId) {
+      onToast({ kind: "err", message: "넘길 기기를 선택하세요." });
+      return;
+    }
+    setSkBusy(true);
+    try {
+      rememberDevice(await handoverManager(handoverId));
+      onToast({ kind: "ok", message: "관리 기기를 넘겼습니다." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function copyDeviceId() {
+    if (!device?.deviceId) return;
+    try {
+      await copyToClipboard(device.deviceId, 0);
+      onToast({ kind: "ok", message: "기기 ID를 복사했습니다." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
     }
   }
 
@@ -1168,11 +1260,112 @@ function SettingsPanel({
     }
   }
 
+  const canChangeSecretKey = device?.canChangeSecretKey !== false;
+  const otherDevices = (device?.devices ?? []).filter((entry) => entry.id !== device?.deviceId);
+
   return (
     <div className="settings-grid">
-      <div>
+      <div className="settings-intro">
         <h2>설정</h2>
         <p className="lede">동기화, 자동 잠금, 마스터 비밀번호, MCP 연결, 내보내기/가져오기를 관리합니다.</p>
+      </div>
+      <div className="card device-card">
+        <div className="card-head">
+          <h3>이 기기</h3>
+          {device?.isManager ? <span className="badge">관리 기기</span> : null}
+          {device?.managerMissing ? <span className="badge">관리 기기 없음</span> : null}
+        </div>
+        <p className="lede">Secret Key를 켜고, 교체하고, 끄는 일은 관리 기기에서만 할 수 있습니다.</p>
+        <label className="field">
+          <span>기기 이름</span>
+          <input readOnly value={device?.deviceName ?? ""} />
+        </label>
+        <label className="field">
+          <span>기기 ID</span>
+          <div className="device-id-row">
+            <input readOnly value={device?.deviceId ?? ""} aria-label="기기 ID" />
+            <button className="btn" type="button" onClick={() => void copyDeviceId()}>
+              복사
+            </button>
+          </div>
+        </label>
+        {device?.managerMissing ? (
+          <p className="notice">
+            관리 기기 없음. 이전 버전이 관리 기기 정보를 지웠을 수 있습니다. Secret Key가 켜져 있으면 이 기기를
+            관리 기기로 지정하세요.
+          </p>
+        ) : null}
+        {device?.notice ? <p className="notice">{device.notice}</p> : null}
+        {device?.managerMissing && skEnabled ? (
+          <form onSubmit={handleDesignate}>
+            <label className="field">
+              <span>마스터 비밀번호</span>
+              <input
+                type="password"
+                value={claimPassword}
+                onChange={(e) => setClaimPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <label className="field">
+              <span>현재 Secret Key</span>
+              <textarea
+                className="secret-key-display"
+                rows={3}
+                value={claimKey}
+                onChange={(e) => setClaimKey(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <button className="btn btn-primary" type="submit" disabled={skBusy}>
+              이 기기를 관리 기기로 지정
+            </button>
+          </form>
+        ) : null}
+        {device && !device.managerMissing && !device.isManager && skEnabled ? (
+          <form onSubmit={handleTakeover}>
+            <label className="field">
+              <span>마스터 비밀번호</span>
+              <input
+                type="password"
+                value={claimPassword}
+                onChange={(e) => setClaimPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <label className="field">
+              <span>현재 Secret Key</span>
+              <input
+                value={claimKey}
+                onChange={(e) => setClaimKey(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <button className="btn" type="submit" disabled={skBusy}>
+              관리 기기 넘겨받기
+            </button>
+          </form>
+        ) : null}
+        {device?.isManager ? (
+          <form onSubmit={handleHandover}>
+            <label className="field">
+              <span>다른 기기로 넘기기</span>
+              <select value={handoverId} onChange={(e) => setHandoverId(e.target.value)}>
+                {otherDevices.length === 0 ? <option value="">등록된 다른 기기가 없습니다</option> : null}
+                {otherDevices.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name || entry.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="btn" type="submit" disabled={skBusy || otherDevices.length === 0}>
+              관리 기기 넘기기
+            </button>
+          </form>
+        ) : null}
       </div>
       <SyncSettings
         status={syncStatus}
@@ -1260,12 +1453,13 @@ function SettingsPanel({
           <p className="lede">이 환경에서는 생체 인증을 사용할 수 없습니다. Linux에서는 꺼진 상태로 둡니다.</p>
         ) : null}
       </div>
-      <div className="card">
+      <div className="card secret-key-card">
         <h3>Secret Key</h3>
         <p className="lede">
           1Password처럼 마스터 비밀번호와 함께 쓰는 두 번째 비밀입니다. 금고 파일이나 동기화 폴더에는 저장되지
           않습니다.
         </p>
+        {device?.notice ? <p className="notice">{device.notice}</p> : null}
         {skEnabled ? (
           <>
             <form onSubmit={handleRevealSk}>
@@ -1303,7 +1497,7 @@ function SettingsPanel({
                   spellCheck={false}
                 />
               </label>
-              <button className="btn" type="submit" disabled={skBusy}>
+              <button className="btn" type="submit" disabled={skBusy || !canChangeSecretKey}>
                 Secret Key 교체
               </button>
             </form>
@@ -1328,7 +1522,7 @@ function SettingsPanel({
                   spellCheck={false}
                 />
               </label>
-              <button className="btn btn-danger" type="submit" disabled={skBusy}>
+              <button className="btn btn-danger" type="submit" disabled={skBusy || !canChangeSecretKey}>
                 Secret Key 끄기
               </button>
             </form>
@@ -1344,7 +1538,7 @@ function SettingsPanel({
                 autoComplete="current-password"
               />
             </label>
-            <button className="btn btn-primary" type="submit" disabled={skBusy}>
+            <button className="btn btn-primary" type="submit" disabled={skBusy || !canChangeSecretKey}>
               Secret Key 켜기
             </button>
           </form>

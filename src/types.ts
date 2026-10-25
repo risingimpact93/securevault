@@ -119,6 +119,24 @@ export interface SecretKeyStatus {
   required: boolean;
 }
 
+export interface DeviceRecord {
+  id: string;
+  name: string;
+  lastSeen: string;
+}
+
+export interface DeviceManagerStatus {
+  deviceId: string;
+  deviceName: string;
+  managerDeviceId?: string | null;
+  managerDeviceName?: string | null;
+  canChangeSecretKey: boolean;
+  managerMissing: boolean;
+  isManager: boolean;
+  notice?: string | null;
+  devices: DeviceRecord[];
+}
+
 export interface EmergencyKit {
   secretKey: string;
   vaultName: string;

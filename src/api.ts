@@ -18,6 +18,7 @@ import type {
   EmergencyKit,
   OpenVaultStatus,
   SecretKeyStatus,
+  DeviceManagerStatus,
   VaultItem,
   VaultLocationMode,
   VaultSettings,
@@ -63,6 +64,9 @@ export function mapError(message: string): string {
     "Secret Key 접두사가 올바르지 않습니다": "Secret Key 접두사가 올바르지 않습니다.",
     "Secret Key 체크섬이 올바르지 않습니다": "Secret Key 체크섬이 올바르지 않습니다.",
     "secret key store unavailable": "Secret Key를 이 기기에 저장하지 못했습니다. 잠금 해제할 때마다 입력하세요.",
+    "관리 기기가 없습니다": "관리 기기가 없습니다.",
+    "등록되지 않은 기기입니다": "등록되지 않은 기기입니다.",
+    "기기 ID가 없습니다": "기기 ID가 없습니다.",
     "failed to encode QR code": "QR 이미지를 만들지 못했습니다.",
     "failed to encode PNG": "QR 이미지를 만들지 못했습니다.",
   };
@@ -397,6 +401,35 @@ export async function rotateSecretKey(password: string, secretKey: string): Prom
   return http<EmergencyKit>("/api/secret-key/rotate", {
     method: "POST",
     body: JSON.stringify({ password, secretKey }),
+  });
+}
+
+export async function deviceManagerStatus(): Promise<DeviceManagerStatus> {
+  if (isTauri()) return invoke<DeviceManagerStatus>("device_manager_status");
+  return http<DeviceManagerStatus>("/api/device");
+}
+
+export async function designateManager(password: string, secretKey: string): Promise<DeviceManagerStatus> {
+  if (isTauri()) return invoke<DeviceManagerStatus>("designate_manager", { password, secretKey });
+  return http<DeviceManagerStatus>("/api/secret-key/designate", {
+    method: "POST",
+    body: JSON.stringify({ password, secretKey }),
+  });
+}
+
+export async function takeoverManager(password: string, secretKey: string): Promise<DeviceManagerStatus> {
+  if (isTauri()) return invoke<DeviceManagerStatus>("takeover_manager", { password, secretKey });
+  return http<DeviceManagerStatus>("/api/secret-key/takeover", {
+    method: "POST",
+    body: JSON.stringify({ password, secretKey }),
+  });
+}
+
+export async function handoverManager(deviceId: string): Promise<DeviceManagerStatus> {
+  if (isTauri()) return invoke<DeviceManagerStatus>("handover_manager", { deviceId });
+  return http<DeviceManagerStatus>("/api/secret-key/handover", {
+    method: "POST",
+    body: JSON.stringify({ deviceId }),
   });
 }
 

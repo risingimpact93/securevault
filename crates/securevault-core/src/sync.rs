@@ -112,6 +112,7 @@ struct Record {
     order_updated_at: String,
     order_updated_by: String,
     order_versions: BTreeMap<String, u64>,
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 pub const CONFIG_FILE: &str = "securevault-config.json";
@@ -1314,6 +1315,13 @@ pub fn update_existing(data: &mut VaultData, incoming: VaultItem, device_id: &st
     updated.versions = existing.versions;
     updated.conflicts = existing.conflicts;
     updated.resolved_conflicts = existing.resolved_conflicts;
+    if updated.extra.is_empty() {
+        updated.extra = existing.extra.clone();
+    } else {
+        let incoming = updated.extra.clone();
+        updated.extra = existing.extra.clone();
+        updated.extra.extend(incoming);
+    }
     if updated.versions.is_empty() {
         updated.versions.insert(LEGACY_DEVICE.to_string(), 1);
     }
@@ -1350,6 +1358,7 @@ pub fn delete_item(data: &mut VaultData, id: &str, device_id: &str) -> Result<()
         order_updated_at: item.order_updated_at,
         order_updated_by: item.order_updated_by,
         order_versions: item.order_versions,
+        extra: item.extra,
     };
     upsert_tombstone(data, tombstone);
     Ok(())
@@ -1577,6 +1586,22 @@ pub fn content_fingerprint(data: &VaultData) -> [u8; 32] {
         data.settings.password_interval_days,
         data.settings.settings_updated_at.clone().unwrap_or_default()
     ));
+    lines.push(format!("m\t{}\t{}", data.manager_device_id, data.manager_updated_at));
+    for device in &data.device_registry {
+        lines.push(format!("d\t{}\t{}\t{}", device.id, device.name, device.last_seen));
+    }
+    if !data.extra.is_empty() {
+        lines.push(format!(
+            "x\t{}",
+            serde_json::to_string(&data.extra).unwrap_or_default()
+        ));
+    }
+    if !data.settings.extra.is_empty() {
+        lines.push(format!(
+            "sx\t{}",
+            serde_json::to_string(&data.settings.extra).unwrap_or_default()
+        ));
+    }
     lines.sort();
     sha256(lines.join("\n").as_bytes())
 }
@@ -1631,6 +1656,9 @@ pub fn merge_vault(local: &mut VaultData, remote: &VaultData) {
     } else {
         local.device_id.clone()
     };
+    let (manager_device_id, manager_updated_at) = pick_manager(local, &remote);
+    let device_registry = merge_device_registry(&local.device_registry, &remote.device_registry);
+    let extra = merge_payload_extra(local, &remote);
     let mut ids = BTreeSet::new();
     for item in local.items.iter().chain(remote.items.iter()) {
         ids.insert(item.id.clone());
@@ -1658,6 +1686,113 @@ pub fn merge_vault(local: &mut VaultData, remote: &VaultData) {
     local.settings = settings;
     local.revision = revision;
     local.device_id = device_id;
+    local.manager_device_id = manager_device_id;
+    local.manager_updated_at = manager_updated_at;
+    local.device_registry = device_registry;
+    local.extra = extra;
+}
+
+/// Newer manager stamp wins. Equal stamps break the tie by manager device id.
+fn pick_manager(local: &VaultData, remote: &VaultData) -> (String, String) {
+    if manager_prefers(
+        &local.manager_updated_at,
+        &local.manager_device_id,
+        &remote.manager_updated_at,
+        &remote.manager_device_id,
+    ) {
+        (local.manager_device_id.clone(), local.manager_updated_at.clone())
+    } else {
+        (remote.manager_device_id.clone(), remote.manager_updated_at.clone())
+    }
+}
+
+fn manager_prefers(left_at: &str, left_id: &str, right_at: &str, right_id: &str) -> bool {
+    match stamp_cmp(left_at, right_at) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => left_id >= right_id,
+    }
+}
+
+fn merge_device_registry(
+    local: &[crate::vault::DeviceRecord],
+    remote: &[crate::vault::DeviceRecord],
+) -> Vec<crate::vault::DeviceRecord> {
+    let mut merged: BTreeMap<String, crate::vault::DeviceRecord> = BTreeMap::new();
+    for device in local.iter().chain(remote.iter()) {
+        match merged.get(&device.id) {
+            None => {
+                merged.insert(device.id.clone(), device.clone());
+            }
+            Some(current) => {
+                if device_record_prefers(device, current) {
+                    merged.insert(device.id.clone(), device.clone());
+                }
+            }
+        }
+    }
+    merged.into_values().collect()
+}
+
+fn device_record_prefers(candidate: &crate::vault::DeviceRecord, current: &crate::vault::DeviceRecord) -> bool {
+    match stamp_cmp(&candidate.last_seen, &current.last_seen) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => candidate.name > current.name,
+    }
+}
+
+fn merge_payload_extra(
+    local: &VaultData,
+    remote: &VaultData,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut keys = BTreeSet::new();
+    keys.extend(local.extra.keys().cloned());
+    keys.extend(remote.extra.keys().cloned());
+    let mut merged = BTreeMap::new();
+    for key in keys {
+        match (local.extra.get(&key), remote.extra.get(&key)) {
+            (Some(left), None) => {
+                merged.insert(key, left.clone());
+            }
+            (None, Some(right)) => {
+                merged.insert(key, right.clone());
+            }
+            (Some(left), Some(right)) => {
+                let pick = if payload_extra_prefers_left(local, remote, left, right) {
+                    left
+                } else {
+                    right
+                };
+                merged.insert(key, pick.clone());
+            }
+            (None, None) => {}
+        }
+    }
+    merged
+}
+
+fn payload_extra_prefers_left(
+    local: &VaultData,
+    remote: &VaultData,
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    match local.revision.cmp(&remote.revision) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match local.device_id.cmp(&remote.device_id) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                serde_json::to_string(left).unwrap_or_default()
+                    >= serde_json::to_string(right).unwrap_or_default()
+            }
+        },
+    }
 }
 
 fn record_for(data: &VaultData, id: &str) -> Option<Record> {
@@ -1747,6 +1882,8 @@ fn keep_conflict(mut winner: Record, loser: Record) -> Record {
     winner.conflicts.extend(loser.conflicts);
     winner.resolved = union_strings(winner.resolved, loser.resolved);
     winner.versions = vv_max(&winner.versions, &loser.versions);
+    vault::merge_unknown_fields(&mut winner.extra, &loser.extra);
+    vault::merge_unknown_fields(&mut winner.content.extra, &loser.content.extra);
     cleanup(&mut winner);
     winner
 }
@@ -1754,6 +1891,8 @@ fn keep_conflict(mut winner: Record, loser: Record) -> Record {
 fn absorb(mut winner: Record, loser: Record) -> Record {
     winner.conflicts.extend(loser.conflicts);
     winner.resolved = union_strings(winner.resolved, loser.resolved);
+    vault::merge_unknown_fields(&mut winner.extra, &loser.extra);
+    vault::merge_unknown_fields(&mut winner.content.extra, &loser.content.extra);
     cleanup(&mut winner);
     winner
 }
@@ -1799,11 +1938,10 @@ fn stamp_cmp(left: &str, right: &str) -> std::cmp::Ordering {
 fn merge_settings(local: &VaultSettings, remote: &VaultSettings) -> VaultSettings {
     let local_stamp = local.settings_updated_at.clone().unwrap_or_default();
     let remote_stamp = remote.settings_updated_at.clone().unwrap_or_default();
-    let mut chosen = if stamp_cmp(&remote_stamp, &local_stamp) == std::cmp::Ordering::Greater {
-        remote.clone()
-    } else {
-        local.clone()
-    };
+    let remote_wins = stamp_cmp(&remote_stamp, &local_stamp) == std::cmp::Ordering::Greater;
+    let (winner, loser) = if remote_wins { (remote, local) } else { (local, remote) };
+    let mut chosen = winner.clone();
+    vault::merge_unknown_fields(&mut chosen.extra, &loser.extra);
     chosen.last_password_unlock_at = later_stamp(&local.last_password_unlock_at, &remote.last_password_unlock_at);
     chosen.normalized()
 }
@@ -1837,6 +1975,7 @@ fn record_from_item(item: &VaultItem) -> Record {
         order_updated_at: item.order_updated_at.clone(),
         order_updated_by: item.order_updated_by.clone().unwrap_or_default(),
         order_versions: item.order_versions.clone(),
+        extra: item.extra.clone(),
     }
 }
 
@@ -1854,6 +1993,7 @@ fn record_from_tombstone(tombstone: &Tombstone) -> Record {
         order_updated_at: tombstone.order_updated_at.clone(),
         order_updated_by: tombstone.order_updated_by.clone().unwrap_or_default(),
         order_versions: tombstone.order_versions.clone(),
+        extra: tombstone.extra.clone(),
     }
 }
 
@@ -1878,6 +2018,8 @@ fn item_from_record(record: &Record) -> VaultItem {
         Some(record.order_updated_by.clone())
     };
     item.order_versions = record.order_versions.clone();
+    item.extra = record.extra.clone();
+    vault::merge_unknown_fields(&mut item.extra, &record.content.extra);
     item
 }
 
@@ -1902,10 +2044,13 @@ fn tombstone_from_record(record: &Record) -> Tombstone {
             Some(record.order_updated_by.clone())
         },
         order_versions: record.order_versions.clone(),
+        extra: record.extra.clone(),
     }
 }
 
 fn record_to_conflict(record: &Record) -> ItemConflict {
+    let mut body = record.content.clone();
+    vault::merge_unknown_fields(&mut body.extra, &record.extra);
     let mut conflict = ItemConflict {
         id: String::new(),
         updated_at: record.updated_at.clone(),
@@ -1916,7 +2061,7 @@ fn record_to_conflict(record: &Record) -> ItemConflict {
         },
         versions: record.versions.clone(),
         deleted: record.deleted,
-        body: record.content.clone(),
+        body,
     };
     conflict.id = conflict_fingerprint(&conflict);
     conflict
@@ -2450,6 +2595,7 @@ mod tests {
             order_updated_at: item.order_updated_at.clone(),
             order_updated_by: item.order_updated_by.clone(),
             order_versions: item.order_versions.clone(),
+            extra: item.extra.clone(),
         }
     }
 

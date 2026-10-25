@@ -57,6 +57,12 @@ struct DisableSecretKeyBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct HandoverBody {
+    device_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChangePasswordBody {
     current_password: String,
     new_password: String,
@@ -171,6 +177,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/secret-key/disable", post(disable_secret_key))
         .route("/api/secret-key/rotate", post(rotate_secret_key))
         .route("/api/secret-key/reveal", post(reveal_secret_key))
+        .route("/api/secret-key/designate", post(designate_manager))
+        .route("/api/secret-key/takeover", post(takeover_manager))
+        .route("/api/secret-key/handover", post(handover_manager))
+        .route("/api/device", get(device_manager_status))
         .route("/api/secret-key/emergency-kit.pdf", post(emergency_kit_pdf))
         .route("/api/secret-key/qr.png", post(emergency_kit_qr))
         .route("/api/lock", post(lock))
@@ -397,6 +407,58 @@ async fn rotate_secret_key(
     }
     match state.rotate_secret_key(&body.password, &body.secret_key) {
         Ok(kit) => Json(kit).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn device_manager_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, false) {
+        return resp;
+    }
+    match state.device_manager_status() {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn designate_manager(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.designate_manager(&body.password, &body.secret_key) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn takeover_manager(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.takeover_manager(&body.password, &body.secret_key) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn handover_manager(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HandoverBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.handover_manager(&body.device_id) {
+        Ok(status) => Json(status).into_response(),
         Err(err) => vault_error(err),
     }
 }

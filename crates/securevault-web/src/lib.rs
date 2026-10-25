@@ -527,6 +527,30 @@ impl AppState {
         Ok(emergency_kit_view(&path, &sk, stored, store_error))
     }
 
+    pub fn device_manager_status(&self) -> Result<vault::DeviceManagerStatus, VaultError> {
+        self.with_unlocked(|unlocked| unlocked.device_manager_status())
+    }
+
+    pub fn designate_manager(&self, password: &str, secret_key: &str) -> Result<vault::DeviceManagerStatus, VaultError> {
+        let secret = SecretString::new(password.to_string());
+        let sk = SecretKey::parse(secret_key)?;
+        self.with_unlocked_mut(|unlocked| unlocked.designate_manager(&secret, &sk))?;
+        self.device_manager_status()
+    }
+
+    pub fn takeover_manager(&self, password: &str, secret_key: &str) -> Result<vault::DeviceManagerStatus, VaultError> {
+        let secret = SecretString::new(password.to_string());
+        let sk = SecretKey::parse(secret_key)?;
+        self.with_unlocked_mut(|unlocked| unlocked.takeover_manager(&secret, &sk))?;
+        self.device_manager_status()
+    }
+
+    pub fn handover_manager(&self, device_id: &str) -> Result<vault::DeviceManagerStatus, VaultError> {
+        let device_id = device_id.to_string();
+        self.with_unlocked_mut(|unlocked| unlocked.handover_manager(&device_id))?;
+        self.device_manager_status()
+    }
+
     pub fn reveal_secret_key(&self, password: &str) -> Result<EmergencyKitView, VaultError> {
         let path = self.vault_path();
         let secret = SecretString::new(password.to_string());
@@ -558,6 +582,7 @@ impl AppState {
     fn install_unlocked(&self, mut unlocked: UnlockedVault, from_password: bool) -> Result<(), VaultError> {
         let path = self.vault_path();
         self.note_sync_context(&mut unlocked);
+        vault::note_local_device(&mut unlocked);
         unlocked.bound_path = path.clone();
         if from_password {
             vault::mark_password_unlock(&mut unlocked.data);
@@ -574,6 +599,9 @@ impl AppState {
         } else {
             vault::load_stored_secret_key(&mut unlocked, self.inner.sk_store.as_ref());
             sync::pull_vault(&path, &mut unlocked)?;
+            vault::note_local_device(&mut unlocked);
+            unlocked.dirty = true;
+            vault::persist_unlocked(&path, &mut unlocked)?;
             self.cache_settings(&unlocked.data.settings);
         }
         self.apply_idle(&unlocked.data.settings);
@@ -1099,6 +1127,7 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         | VaultError::Cancelled
         | VaultError::SecretKeyRequired
         | VaultError::SecretKeyMismatch => StatusCode::UNAUTHORIZED,
+        VaultError::NotSecretKeyManager(_) => StatusCode::FORBIDDEN,
         VaultError::NotFound | VaultError::ItemNotFound => StatusCode::NOT_FOUND,
         VaultError::AlreadyExists
         | VaultError::SyncPasswordRequired

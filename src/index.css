@@ -281,6 +281,12 @@ h3 {
   transform: translateY(1px);
 }
 
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .btn-primary {
   background: linear-gradient(180deg, #e0b85a, #c4921a);
   color: #1b1608;
@@ -1066,6 +1072,32 @@ h3 {
   border-radius: var(--radius);
   padding: 16px;
   min-width: 0;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card-head .badge {
+  margin: 0;
+  flex: none;
+}
+
+.device-id-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.device-id-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
 }
 
 .sync-banner {

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Settings mock</title>
+    <style>
+      /* Dev-only framing so the manager cards fit a 1100×750 shot. Production settings stay one column. */
+      .settings-shot {
+        height: 100%;
+        box-sizing: border-box;
+        padding: 14px 16px 10px;
+        overflow: hidden;
+        font-family: "Noto Sans CJK KR", "Nanum Gothic", "Gothic A1", sans-serif;
+      }
+      .settings-shot .settings-grid {
+        max-width: none;
+        height: 100%;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 10px 14px;
+      }
+      .settings-shot .settings-intro {
+        grid-column: 1 / -1;
+      }
+      .settings-shot .settings-intro .lede {
+        margin: 4px 0 0;
+      }
+      .settings-shot .device-card {
+        grid-column: 1;
+        grid-row: 2;
+        overflow: hidden;
+      }
+      .settings-shot .secret-key-card {
+        grid-column: 2;
+        grid-row: 2;
+        overflow: hidden;
+      }
+      .settings-shot .settings-grid > :not(.settings-intro):not(.device-card):not(.secret-key-card) {
+        display: none;
+      }
+      .settings-shot .card {
+        padding: 12px 14px;
+      }
+      .settings-shot .lede {
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      .settings-shot .field {
+        margin-bottom: 8px;
+        gap: 4px;
+      }
+      .settings-shot .notice {
+        margin-bottom: 8px;
+        padding: 8px 10px;
+      }
+      .settings-shot .card-head {
+        margin-bottom: 4px;
+      }
+      .settings-shot .secret-key-display {
+        min-height: 44px;
+        height: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Dev server only. vite build input is index.html, so this page is not in dist. -->
+    <script type="module" src="/src/dev/settings-harness.tsx"></script>
+  </body>
+</html>

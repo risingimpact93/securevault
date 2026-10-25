@@ -1427,3 +1427,121 @@ async fn secret_key_env_var_unlocks_without_body() {
     }
     assert_eq!(unlocked.status, 200, "{}", String::from_utf8_lossy(&unlocked.body));
 }
+
+#[tokio::test]
+async fn secret_key_manager_routes_reject_non_manager() {
+    let _guard = secret_key_env_lock();
+    std::env::remove_var("SECUREVAULT_SECRET_KEY");
+    std::env::remove_var("KEYHAVEN_SECRET_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _) = serve_for_test(Config::test(dir.path().to_path_buf())).await;
+    let mut jar = CookieJar::new();
+    let csrf = create_and_unlock(port, &mut jar).await;
+    let enabled = json_req(
+        port,
+        "POST",
+        "/api/secret-key/enable",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    assert_eq!(enabled.status, 200, "{}", String::from_utf8_lossy(&enabled.body));
+    let secret_key = enabled.json()["secretKey"].as_str().unwrap().to_string();
+    let mine = json_req(port, "GET", "/api/device", Some(&mut jar), Some(&csrf), None).await;
+    assert_eq!(mine.status, 200, "{}", String::from_utf8_lossy(&mine.body));
+    assert_eq!(mine.json()["isManager"], true);
+    assert_eq!(mine.json()["canChangeSecretKey"], true);
+
+    let _ = json_req(port, "POST", "/api/lock", Some(&mut jar), Some(&csrf), Some(&json!({}))).await;
+
+    let path = dir.path().join("vault.khv");
+    let mut unlocked = vault::unlock_file_with_secret_key(
+        &path,
+        &SecretString::new(MASTER.to_string()),
+        Some(&secret_key),
+        None,
+    )
+    .unwrap();
+    unlocked.data.manager_device_id = "other-device".into();
+    unlocked.data.manager_updated_at = "2026-10-25T00:00:00Z".into();
+    unlocked.data.device_registry.push(vault::DeviceRecord {
+        id: "other-device".into(),
+        name: "작업실".into(),
+        last_seen: "2026-10-25T00:00:00Z".into(),
+    });
+    unlocked.device_id = "other-device".into();
+    unlocked.dirty = true;
+    vault::persist_unlocked(&path, &mut unlocked).unwrap();
+
+    let mut jar = CookieJar::new();
+    let unlocked_res = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER, "secretKey": secret_key })),
+    )
+    .await;
+    assert_eq!(unlocked_res.status, 200, "{}", String::from_utf8_lossy(&unlocked_res.body));
+    let csrf = unlocked_res.json()["csrfToken"].as_str().unwrap().to_string();
+
+    let status = json_req(port, "GET", "/api/device", Some(&mut jar), Some(&csrf), None).await;
+    assert_eq!(status.status, 200, "{}", String::from_utf8_lossy(&status.body));
+    assert_eq!(status.json()["canChangeSecretKey"], false);
+    assert_eq!(status.json()["managerMissing"], false);
+    assert_eq!(
+        status.json()["notice"].as_str(),
+        Some("관리 기기(작업실)에서만 변경할 수 있어요")
+    );
+
+    let rejected = [
+        ("/api/secret-key/enable", json!({ "password": MASTER })),
+        (
+            "/api/secret-key/rotate",
+            json!({ "password": MASTER, "secretKey": secret_key }),
+        ),
+        (
+            "/api/secret-key/disable",
+            json!({ "password": MASTER, "secretKey": secret_key }),
+        ),
+        (
+            "/api/secret-key/handover",
+            json!({ "deviceId": "other-device" }),
+        ),
+    ];
+    for (path, body) in rejected {
+        let res = json_req(port, "POST", path, Some(&mut jar), Some(&csrf), Some(&body)).await;
+        assert_eq!(res.status, 403, "{path} {}", String::from_utf8_lossy(&res.body));
+        assert!(
+            res.json()["error"].as_str().unwrap_or("").contains("관리 기기"),
+            "{path} {}",
+            String::from_utf8_lossy(&res.body)
+        );
+    }
+
+    let taken = json_req(
+        port,
+        "POST",
+        "/api/secret-key/takeover",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER, "secretKey": secret_key })),
+    )
+    .await;
+    assert_eq!(taken.status, 200, "{}", String::from_utf8_lossy(&taken.body));
+    assert_eq!(taken.json()["isManager"], true);
+    assert_eq!(taken.json()["canChangeSecretKey"], true);
+
+    let rotated = json_req(
+        port,
+        "POST",
+        "/api/secret-key/rotate",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER, "secretKey": secret_key })),
+    )
+    .await;
+    assert_eq!(rotated.status, 200, "{}", String::from_utf8_lossy(&rotated.body));
+}
