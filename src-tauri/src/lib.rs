@@ -1284,6 +1284,7 @@ fn save_bytes_with_dialog(
     if let Some(dir) = documents_dir(app) {
         builder = builder.set_directory(dir);
     }
+    #[cfg(desktop)]
     if let Some(window) = app.get_webview_window("main") {
         builder = builder.set_parent(&window);
     }
