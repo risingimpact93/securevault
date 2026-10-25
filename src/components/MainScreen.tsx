@@ -18,6 +18,7 @@ import {
   pickOpenPath,
   pickSavePath,
   revealSecretKey,
+  rotateSecretKey,
   secretKeyStatus,
   updateItem,
   updateVaultSettings,
@@ -978,6 +979,8 @@ function SettingsPanel({
   const [skBusy, setSkBusy] = useState(false);
   const [skPassword, setSkPassword] = useState("");
   const [skValue, setSkValue] = useState("");
+  const [rotatePassword, setRotatePassword] = useState("");
+  const [rotateKey, setRotateKey] = useState("");
 
   useEffect(() => {
     setIntervalDays(String(settings.passwordIntervalDays));
@@ -1059,6 +1062,33 @@ function SettingsPanel({
       const nextKit = await revealSecretKey(skPassword);
       setSkPassword("");
       onKit(nextKit, true);
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function handleRotateSk(e: FormEvent) {
+    e.preventDefault();
+    if (!rotatePassword) {
+      onToast({ kind: "err", message: "마스터 비밀번호를 입력하세요." });
+      return;
+    }
+    if (!rotateKey.trim()) {
+      onToast({ kind: "err", message: "현재 Secret Key를 입력하세요." });
+      return;
+    }
+    setSkBusy(true);
+    try {
+      const nextKit = await rotateSecretKey(rotatePassword, rotateKey.trim());
+      setRotatePassword("");
+      setRotateKey("");
+      setSkPassword("");
+      setSkValue("");
+      setSkEnabled(true);
+      onKit(nextKit, false);
+      onToast({ kind: "ok", message: "Secret Key를 교체했습니다. 새 비상 키트를 보관하세요." });
     } catch (err) {
       onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
     } finally {
@@ -1250,6 +1280,31 @@ function SettingsPanel({
               </label>
               <button className="btn" type="submit" disabled={skBusy}>
                 Secret Key / QR 보기
+              </button>
+            </form>
+            <form onSubmit={handleRotateSk}>
+              <label className="field">
+                <span>마스터 비밀번호</span>
+                <input
+                  type="password"
+                  value={rotatePassword}
+                  onChange={(e) => setRotatePassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+              <label className="field">
+                <span>현재 Secret Key</span>
+                <textarea
+                  className="secret-key-display"
+                  rows={3}
+                  value={rotateKey}
+                  onChange={(e) => setRotateKey(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <button className="btn" type="submit" disabled={skBusy}>
+                Secret Key 교체
               </button>
             </form>
             <form onSubmit={handleDisableSk}>

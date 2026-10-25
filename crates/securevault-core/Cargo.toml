@@ -31,6 +31,10 @@ chrono = { version = "=0.4.40", default-features = false, features = ["clock", "
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 secrecy = "0.8"
 thiserror = "2"
+# Pinned for rustc 1.85. pdf-writer 0.12.1 MSRV is well below 1.85; printpdf 0.12 needs rustc 1.88.
+pdf-writer = "=0.12.1"
+qrcode = { version = "=0.14.1", default-features = false }
+png = "=0.17.16"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "=3.5.1", features = ["OSX_10_13"] }

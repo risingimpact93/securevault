@@ -63,6 +63,8 @@ export function mapError(message: string): string {
     "Secret Key 접두사가 올바르지 않습니다": "Secret Key 접두사가 올바르지 않습니다.",
     "Secret Key 체크섬이 올바르지 않습니다": "Secret Key 체크섬이 올바르지 않습니다.",
     "secret key store unavailable": "Secret Key를 이 기기에 저장하지 못했습니다. 잠금 해제할 때마다 입력하세요.",
+    "failed to encode QR code": "QR 이미지를 만들지 못했습니다.",
+    "failed to encode PNG": "QR 이미지를 만들지 못했습니다.",
   };
   return table[message] ?? message;
 }
@@ -390,6 +392,14 @@ export async function revealSecretKey(password: string): Promise<EmergencyKit> {
   });
 }
 
+export async function rotateSecretKey(password: string, secretKey: string): Promise<EmergencyKit> {
+  if (isTauri()) return invoke<EmergencyKit>("rotate_secret_key", { password, secretKey });
+  return http<EmergencyKit>("/api/secret-key/rotate", {
+    method: "POST",
+    body: JSON.stringify({ password, secretKey }),
+  });
+}
+
 export async function lock(): Promise<void> {
   if (isTauri()) {
     await invoke("lock");
@@ -562,6 +572,130 @@ export async function copyToClipboard(text: string, clearAfterSecs: number): Pro
     return;
   }
   await webCopy(text, clearAfterSecs);
+}
+
+function downloadBlob(bytes: Uint8Array, filename: string, mime: string): void {
+  const blob = new Blob([bytes], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function httpBytes(path: string, init: RequestInit = {}): Promise<Uint8Array> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  const mutating = method !== "GET" && method !== "HEAD";
+  if (mutating && csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+  if (init.body && typeof init.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(path, {
+    ...init,
+    method,
+    headers,
+    credentials: "include",
+  });
+  const headerCsrf = res.headers.get("X-CSRF-Token");
+  if (headerCsrf) csrfToken = headerCsrf;
+  if (!res.ok) {
+    let message = res.statusText;
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        const data: unknown = await res.json();
+        if (data && typeof data === "object" && "error" in data) {
+          const error = (data as { error?: unknown }).error;
+          if (typeof error === "string" && error) message = error;
+        }
+      } catch {
+        /* keep statusText */
+      }
+    }
+    throw new Error(message);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/** Native save dialog. `null` means the user cancelled. */
+export async function saveEmergencyKitPdf(kit: EmergencyKit): Promise<string | null> {
+  if (isTauri()) {
+    return invoke<string | null>("save_emergency_kit_pdf", {
+      secretKey: kit.secretKey,
+      vaultName: kit.vaultName,
+      date: kit.date,
+    });
+  }
+  const bytes = await httpBytes("/api/secret-key/emergency-kit.pdf", {
+    method: "POST",
+    body: JSON.stringify({
+      secretKey: kit.secretKey,
+      vaultName: kit.vaultName,
+      date: kit.date,
+    }),
+  });
+  downloadBlob(bytes, "SecureVault Emergency Kit.pdf", "application/pdf");
+  return "SecureVault Emergency Kit.pdf";
+}
+
+/** Save a PDF under app data (or the temp dir) and open it in Preview. */
+export async function printEmergencyKit(kit: EmergencyKit): Promise<void> {
+  if (isTauri()) {
+    await invoke("print_emergency_kit", {
+      secretKey: kit.secretKey,
+      vaultName: kit.vaultName,
+      date: kit.date,
+    });
+    return;
+  }
+  const bytes = await httpBytes("/api/secret-key/emergency-kit.pdf", {
+    method: "POST",
+    body: JSON.stringify({
+      secretKey: kit.secretKey,
+      vaultName: kit.vaultName,
+      date: kit.date,
+    }),
+  });
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const opened = window.open(url, "_blank");
+  if (!opened) {
+    URL.revokeObjectURL(url);
+    throw new Error("인쇄 미리보기를 열지 못했습니다.");
+  }
+}
+
+/** Native save dialog. `null` means the user cancelled. */
+export async function saveSecretKeyQr(secretKey: string): Promise<string | null> {
+  if (isTauri()) {
+    return invoke<string | null>("save_secret_key_qr", { secretKey });
+  }
+  const bytes = await httpBytes("/api/secret-key/qr.png", {
+    method: "POST",
+    body: JSON.stringify({ secretKey }),
+  });
+  downloadBlob(bytes, "SecureVault Secret Key QR.png", "image/png");
+  return "SecureVault Secret Key QR.png";
+}
+
+export async function revealSavedFile(path: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("reveal_saved_file", { path });
+    return;
+  }
+  throw new Error("이 환경에서는 파일 위치를 열 수 없습니다.");
+}
+
+export async function openSavedFilePreview(path: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("open_saved_file_preview", { path });
+    return;
+  }
+  throw new Error("이 환경에서는 Preview를 열 수 없습니다.");
 }
 
 export async function syncStatus(): Promise<SyncStatus> {

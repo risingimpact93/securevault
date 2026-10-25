@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use securevault_core::emergency_kit::{self, EmergencyKitDoc};
 use securevault_core::secret_key::SecretKey;
 use securevault_core::secret_key_store::{local_secret_key_store, SecretKeyStore};
 use securevault_core::sync::{self, ConflictView, SyncStatus};
@@ -18,6 +19,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
 #[derive(Clone)]
@@ -500,6 +502,34 @@ async fn disable_secret_key(
     let _ = store.delete(&vault_id);
     refresh_touch_id_if_enabled(&app, &path).await?;
     Ok(())
+}
+
+#[tauri::command]
+async fn rotate_secret_key(
+    app: AppHandle,
+    password: String,
+    secret_key: String,
+) -> Result<EmergencyKitView, String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let secret = SecretString::new(password);
+    let current = SecretKey::parse(&secret_key).map_err(err)?;
+    let old_id = current.vault_id();
+    let sk = {
+        let state = app.state::<AppState>();
+        let device = device_id(&app)?;
+        let mut guard = require_unlocked(&state)?;
+        let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+        bind_device(unlocked, &device);
+        let sk = unlocked.rotate_secret_key(&secret, &current).map_err(err)?;
+        unlocked.dirty = true;
+        persist(&app, &path, unlocked)?;
+        sk
+    };
+    let _ = store.delete(&old_id);
+    let (stored, store_error) = remember_secret_key(store.as_ref(), &sk);
+    refresh_touch_id_if_enabled(&app, &path).await?;
+    Ok(emergency_kit(&path, &sk, stored, store_error))
 }
 
 #[tauri::command]
@@ -1053,6 +1083,178 @@ fn merge_sync_password(app: AppHandle, path: String, password: String) -> Result
     persist(&app, &main, unlocked)
 }
 
+fn documents_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().document_dir().ok()
+}
+
+fn save_bytes_with_dialog(
+    app: &AppHandle,
+    title: &str,
+    file_name: &str,
+    filter_name: &str,
+    extensions: &[&str],
+    bytes: &[u8],
+) -> Result<Option<String>, String> {
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(file_name)
+        .add_filter(filter_name, extensions);
+    if let Some(dir) = documents_dir(app) {
+        builder = builder.set_directory(dir);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        builder = builder.set_parent(&window);
+    }
+    let Some(file) = builder.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|_| "파일을 저장하지 못했습니다.".to_string())?;
+    std::fs::write(&path, bytes).map_err(|_| "파일을 저장하지 못했습니다.".to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn save_emergency_kit_pdf(
+    app: AppHandle,
+    secret_key: String,
+    vault_name: String,
+    date: String,
+) -> Result<Option<String>, String> {
+    let bytes = tokio::task::spawn_blocking(move || {
+        emergency_kit::render_pdf(&EmergencyKitDoc {
+            secret_key: &secret_key,
+            vault_name: &vault_name,
+            date: &date,
+        })
+    })
+    .await
+    .map_err(|_| "PDF를 만들지 못했습니다.".to_string())?
+    .map_err(|_| "PDF를 만들지 못했습니다.".to_string())?;
+    save_bytes_with_dialog(
+        &app,
+        "비상 키트 PDF 저장",
+        "SecureVault Emergency Kit.pdf",
+        "PDF",
+        &["pdf"],
+        &bytes,
+    )
+}
+
+#[tauri::command]
+async fn print_emergency_kit(
+    app: AppHandle,
+    secret_key: String,
+    vault_name: String,
+    date: String,
+) -> Result<(), String> {
+    let bytes = tokio::task::spawn_blocking(move || {
+        emergency_kit::render_pdf(&EmergencyKitDoc {
+            secret_key: &secret_key,
+            vault_name: &vault_name,
+            date: &date,
+        })
+    })
+    .await
+    .map_err(|_| "PDF를 만들지 못했습니다.".to_string())?
+    .map_err(|_| "PDF를 만들지 못했습니다.".to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| "인쇄용 PDF를 저장할 폴더를 만들지 못했습니다.".to_string())?;
+    let path = dir.join("emergency-kit-print.pdf");
+    std::fs::write(&path, bytes).map_err(|_| "인쇄용 PDF를 저장하지 못했습니다.".to_string())?;
+    open_saved_file_preview(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn save_secret_key_qr(app: AppHandle, secret_key: String) -> Result<Option<String>, String> {
+    let bytes = tokio::task::spawn_blocking(move || emergency_kit::render_qr_png(&secret_key))
+        .await
+        .map_err(|_| "QR 이미지를 만들지 못했습니다.".to_string())?
+        .map_err(|_| "QR 이미지를 만들지 못했습니다.".to_string())?;
+    save_bytes_with_dialog(
+        &app,
+        "Secret Key QR 저장",
+        "SecureVault Secret Key QR.png",
+        "PNG",
+        &["png"],
+        &bytes,
+    )
+}
+
+fn spawn_checked(program: &str, args: &[&str], fail: &str) -> Result<(), String> {
+    let status = std::process::Command::new(program)
+        .args(args)
+        .status()
+        .map_err(|_| fail.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(fail.to_string())
+    }
+}
+
+#[tauri::command]
+fn reveal_saved_file(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("파일 경로가 없습니다.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return spawn_checked("open", &["-R", &path], "Finder에서 파일을 보여주지 못했습니다.");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return spawn_checked(
+            "explorer",
+            &["/select,", &path],
+            "파일 위치에서 보여주지 못했습니다.",
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let parent = Path::new(&path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        spawn_checked(
+            "xdg-open",
+            &[parent.to_str().unwrap_or(".")],
+            "파일 위치에서 보여주지 못했습니다.",
+        )
+    }
+}
+
+#[tauri::command]
+fn open_saved_file_preview(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("파일 경로가 없습니다.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return spawn_checked(
+            "open",
+            &["-a", "Preview", &path],
+            "Preview에서 파일을 열지 못했습니다.",
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return spawn_checked("cmd", &["/C", "start", "", &path], "파일을 열지 못했습니다.");
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        spawn_checked("xdg-open", &[&path], "파일을 열지 못했습니다.")
+    }
+}
+
 #[tauri::command]
 fn copy_to_clipboard(app: AppHandle, text: String, clear_after_secs: u64) -> Result<(), String> {
     app.clipboard()
@@ -1105,6 +1307,7 @@ pub fn run() {
             import_secret_key,
             enable_secret_key,
             disable_secret_key,
+            rotate_secret_key,
             reveal_secret_key,
             lock,
             is_unlocked,
@@ -1119,6 +1322,11 @@ pub fn run() {
             export_vault,
             import_vault,
             copy_to_clipboard,
+            save_emergency_kit_pdf,
+            print_emergency_kit,
+            save_secret_key_qr,
+            reveal_saved_file,
+            open_saved_file_preview,
             get_vault_settings,
             update_vault_settings,
             screen_lock_supported,

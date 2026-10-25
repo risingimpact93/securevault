@@ -728,6 +728,40 @@ impl UnlockedVault {
         Ok(())
     }
 
+    /// Replace the Secret Key and re-wrap the vault key in memory.
+    ///
+    /// Callers persist once. This never clears the SK flag first: a disable
+    /// followed by enable would write a version-1 file in between.
+    pub fn rotate_secret_key(
+        &mut self,
+        password: &SecretString,
+        current: &crate::secret_key::SecretKey,
+    ) -> Result<crate::secret_key::SecretKey, VaultError> {
+        if !self.sk_enabled() {
+            return Err(VaultError::SecretKeyRequired);
+        }
+        let expected_fp = if let Some(fp) = self.sk_fingerprint {
+            fp
+        } else if let Some(sk) = &self.secret_key {
+            sk.fingerprint()
+        } else {
+            return Err(VaultError::SecretKeyRequired);
+        };
+        if current.fingerprint() != expected_fp {
+            return Err(VaultError::SecretKeyMismatch);
+        }
+        let argon = derive_key(password, &self.salt, &self.params)?;
+        let derived = crate::secret_key::apply_2skd(&argon, current)?;
+        if derived.as_bytes() != self.key.as_bytes() {
+            return Err(VaultError::WrongPassword);
+        }
+        let new_sk = crate::secret_key::SecretKey::generate();
+        self.key = crate::secret_key::apply_2skd(&argon, &new_sk)?;
+        self.sk_fingerprint = Some(new_sk.fingerprint());
+        self.secret_key = Some(new_sk.clone());
+        Ok(new_sk)
+    }
+
     pub fn change_master_password(
         &mut self,
         current: &SecretString,
@@ -1291,7 +1325,24 @@ pub fn import_bytes(bytes: &[u8], export_password: &SecretString) -> Result<Vaul
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static ATOMIC_WRITES: std::cell::RefCell<Option<Vec<Vec<u8>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn record_atomic_write(data: &[u8]) {
+    ATOMIC_WRITES.with(|slot| {
+        if let Some(log) = slot.borrow_mut().as_mut() {
+            log.push(data.to_vec());
+        }
+    });
+}
+
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), VaultError> {
+    #[cfg(test)]
+    record_atomic_write(data);
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1835,5 +1886,172 @@ mod tests {
         let loaded = unlock_file_with_secret_key(&path, &password, None, Some(&store)).unwrap();
         assert!(loaded.sk_enabled());
         assert_eq!(loaded.secret_key.as_ref().unwrap().as_bytes(), sk.as_bytes());
+    }
+
+    struct WriteCapture;
+
+    impl WriteCapture {
+        fn start() -> Self {
+            super::ATOMIC_WRITES.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+            Self
+        }
+
+        fn finish(self) -> Vec<Vec<u8>> {
+            super::ATOMIC_WRITES.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+        }
+    }
+
+    impl Drop for WriteCapture {
+        fn drop(&mut self) {
+            super::ATOMIC_WRITES.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    fn assert_sk_payload(bytes: &[u8]) {
+        let enc = parse_encrypted(bytes).expect("written bytes must stay a vault header");
+        assert!(enc.sk_enabled, "SK flag missing from written vault");
+        assert!(enc.sk_fingerprint.is_some(), "SK fingerprint missing");
+        assert_eq!(enc.version, VAULT_VERSION_SK);
+        let text = std::str::from_utf8(bytes).expect("vault json is utf-8");
+        assert!(
+            text.contains("\"skEnabled\":true"),
+            "serialized header dropped the SK flag: {text}"
+        );
+    }
+
+    fn assert_dir_vaults_keep_secret_key(dir: &Path) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if let Ok(enc) = parse_encrypted(&bytes) {
+                assert!(
+                    enc.sk_enabled && enc.version == VAULT_VERSION_SK && enc.sk_fingerprint.is_some(),
+                    "{} was written without a Secret Key",
+                    path.display()
+                );
+            }
+        }
+        let leftovers: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                if name.contains(".tmp") {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "temp vault left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn rotate_secret_key_rejects_wrong_secret_or_password_without_touching_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("rotate-reject-master");
+        let mut unlocked = create_vault_at(&path, &password).unwrap();
+        let before_plain = fs::read(&path).unwrap();
+        let bogus = crate::secret_key::SecretKey::generate();
+        let not_enabled = unlocked.rotate_secret_key(&password, &bogus).unwrap_err();
+        assert!(matches!(not_enabled, VaultError::SecretKeyRequired));
+        assert_eq!(fs::read(&path).unwrap(), before_plain);
+        assert_eq!(parse_encrypted(&before_plain).unwrap().version, VAULT_VERSION);
+
+        unlocked.data.items.push(sample_item());
+        let current = unlocked.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
+        let before = fs::read(&path).unwrap();
+        let fp = unlocked.fingerprint_b64();
+        let key = unlocked.key.as_bytes().to_vec();
+        let sk_bytes = unlocked.secret_key.as_ref().unwrap().as_bytes().to_vec();
+
+        let wrong_password = unlocked
+            .rotate_secret_key(&secret("not-the-master"), &current)
+            .unwrap_err();
+        assert!(matches!(wrong_password, VaultError::WrongPassword));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(unlocked.fingerprint_b64(), fp);
+        assert_eq!(unlocked.key.as_bytes().as_slice(), key.as_slice());
+        assert_eq!(
+            unlocked.secret_key.as_ref().unwrap().as_bytes().as_slice(),
+            sk_bytes.as_slice()
+        );
+
+        let other = crate::secret_key::SecretKey::generate();
+        let wrong_sk = unlocked.rotate_secret_key(&password, &other).unwrap_err();
+        assert!(matches!(wrong_sk, VaultError::SecretKeyMismatch));
+        assert_eq!(wrong_sk.to_string(), "Secret Key가 이 금고와 맞지 않습니다");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(unlocked.fingerprint_b64(), fp);
+        assert_eq!(unlocked.key.as_bytes().as_slice(), key.as_slice());
+        assert_sk_payload(&before);
+    }
+
+    #[test]
+    fn rotate_secret_key_roundtrip_old_key_fails_and_write_stays_sk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("rotate-roundtrip-master");
+        let mut created = create_vault_at(&path, &password).unwrap();
+        created.data.items.push(sample_item());
+        let old = created.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut created).unwrap();
+
+        let mut unlocked =
+            unlock_file_with_secret_key(&path, &password, Some(&old.format_display()), None).unwrap();
+        // Touch ID unlock keeps the fingerprint but not the Secret Key bytes.
+        unlocked.secret_key = None;
+        assert!(unlocked.sk_fingerprint.is_some());
+
+        let capture = WriteCapture::start();
+        let new_sk = unlocked.rotate_secret_key(&password, &old).unwrap();
+        assert_ne!(new_sk.as_bytes(), old.as_bytes());
+        assert!(unlocked.sk_enabled());
+        assert!(unlocked.secret_key.is_some());
+        unlocked.dirty = true;
+        persist_unlocked(&path, &mut unlocked).unwrap();
+        let writes = capture.finish();
+
+        assert_eq!(
+            writes.len(),
+            1,
+            "rotation must atomically rewrite the vault once, got {} writes",
+            writes.len()
+        );
+        for bytes in &writes {
+            assert_sk_payload(bytes);
+        }
+        let final_bytes = fs::read(&path).unwrap();
+        assert_sk_payload(&final_bytes);
+        assert_eq!(final_bytes, writes[0]);
+        assert_dir_vaults_keep_secret_key(dir.path());
+
+        let loaded =
+            unlock_file_with_secret_key(&path, &password, Some(&new_sk.format_display()), None)
+                .unwrap();
+        assert_eq!(loaded.data.items[0].title, "Example");
+        assert_eq!(loaded.data.items[0].password.as_deref(), Some("secret-pass"));
+        assert_eq!(loaded.secret_key.as_ref().unwrap().as_bytes(), new_sk.as_bytes());
+        assert_eq!(
+            loaded.fingerprint_b64().as_deref(),
+            Some(new_sk.fingerprint_b64().as_str())
+        );
+
+        let old_fails =
+            unlock_file_with_secret_key(&path, &password, Some(&old.format_display()), None)
+                .unwrap_err();
+        assert!(matches!(old_fails, VaultError::SecretKeyMismatch));
+        let missing = unlock_file(&path, &password).unwrap_err();
+        assert!(matches!(missing, VaultError::SecretKeyRequired));
+        let wrong_pw =
+            unlock_file_with_secret_key(&path, &secret("nope"), Some(&new_sk.format_display()), None)
+                .unwrap_err();
+        assert!(matches!(wrong_pw, VaultError::WrongPassword));
     }
 }

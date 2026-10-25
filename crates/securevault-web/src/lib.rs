@@ -510,6 +510,23 @@ impl AppState {
         Ok(())
     }
 
+    /// Verify the current Secret Key and master password, then re-encrypt once
+    /// under a new Secret Key. The keychain entry is replaced after that write.
+    pub fn rotate_secret_key(&self, password: &str, secret_key: &str) -> Result<EmergencyKitView, VaultError> {
+        let path = self.vault_path();
+        let secret = SecretString::new(password.to_string());
+        let current = SecretKey::parse(secret_key)?;
+        let old_id = current.vault_id();
+        let sk = self.with_unlocked_mut(|unlocked| unlocked.rotate_secret_key(&secret, &current))?;
+        let _ = self.inner.sk_store.delete(&old_id);
+        let (stored, store_error) = match self.inner.sk_store.store(&sk.vault_id(), &sk) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        };
+        self.clear_prf_wrap();
+        Ok(emergency_kit_view(&path, &sk, stored, store_error))
+    }
+
     pub fn reveal_secret_key(&self, password: &str) -> Result<EmergencyKitView, VaultError> {
         let path = self.vault_path();
         let secret = SecretString::new(password.to_string());

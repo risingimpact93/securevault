@@ -1274,6 +1274,114 @@ async fn secret_key_enable_unlock_and_env() {
 }
 
 #[tokio::test]
+async fn secret_key_rotate_roundtrip() {
+    let _guard = secret_key_env_lock();
+    std::env::remove_var("SECUREVAULT_SECRET_KEY");
+    std::env::remove_var("KEYHAVEN_SECRET_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _) = serve_for_test(Config::test(dir.path().to_path_buf())).await;
+    let mut jar = CookieJar::new();
+    let csrf = create_and_unlock(port, &mut jar).await;
+    let enabled = json_req(
+        port,
+        "POST",
+        "/api/secret-key/enable",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    assert_eq!(enabled.status, 200, "{}", String::from_utf8_lossy(&enabled.body));
+    let old_key = enabled.json()["secretKey"].as_str().unwrap().to_string();
+    let vault_path = dir.path().join("vault.khv");
+    let before = std::fs::read(&vault_path).unwrap();
+
+    let wrong_pw = json_req(
+        port,
+        "POST",
+        "/api/secret-key/rotate",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": "nope-nope-nope", "secretKey": old_key })),
+    )
+    .await;
+    assert_eq!(wrong_pw.status, 401, "{}", String::from_utf8_lossy(&wrong_pw.body));
+    assert_eq!(std::fs::read(&vault_path).unwrap(), before);
+
+    let other = securevault_core::secret_key::SecretKey::generate().format_display();
+    let wrong_sk = json_req(
+        port,
+        "POST",
+        "/api/secret-key/rotate",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER, "secretKey": other })),
+    )
+    .await;
+    assert_eq!(wrong_sk.status, 401, "{}", String::from_utf8_lossy(&wrong_sk.body));
+    assert_eq!(std::fs::read(&vault_path).unwrap(), before);
+
+    let rotated = json_req(
+        port,
+        "POST",
+        "/api/secret-key/rotate",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER, "secretKey": old_key })),
+    )
+    .await;
+    assert_eq!(rotated.status, 200, "{}", String::from_utf8_lossy(&rotated.body));
+    let new_key = rotated.json()["secretKey"].as_str().unwrap().to_string();
+    assert!(new_key.starts_with("SV1-"));
+    assert_ne!(new_key, old_key);
+
+    let bytes = std::fs::read(&vault_path).unwrap();
+    let enc = vault::parse_encrypted(&bytes).unwrap();
+    assert!(enc.sk_enabled);
+    assert_eq!(enc.version, vault::VAULT_VERSION_SK);
+    assert!(enc.sk_fingerprint.is_some());
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("\"skEnabled\":true"));
+    assert!(!text.contains(&new_key));
+    assert!(!text.contains(&old_key));
+
+    let sk_dir = dir.path().join("secret-key");
+    let stored: Vec<_> = std::fs::read_dir(&sk_dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            std::fs::read_to_string(path).unwrap()
+        })
+        .collect();
+    assert_eq!(stored.len(), 1, "old keychain entry should be replaced");
+    assert_eq!(stored[0].trim(), new_key);
+
+    let _ = json_req(port, "POST", "/api/lock", Some(&mut jar), Some(&csrf), Some(&json!({}))).await;
+    jar = CookieJar::new();
+    let old_unlock = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER, "secretKey": old_key })),
+    )
+    .await;
+    assert_eq!(old_unlock.status, 401, "{}", String::from_utf8_lossy(&old_unlock.body));
+
+    let new_unlock = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER, "secretKey": new_key })),
+    )
+    .await;
+    assert_eq!(new_unlock.status, 200, "{}", String::from_utf8_lossy(&new_unlock.body));
+}
+
+#[tokio::test]
 async fn secret_key_env_var_unlocks_without_body() {
     let _guard = secret_key_env_lock();
     let previous = std::env::var("SECUREVAULT_SECRET_KEY").ok();

@@ -42,6 +42,14 @@ struct EnableSecretKeyBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct EmergencyKitPdfBody {
+    secret_key: String,
+    vault_name: String,
+    date: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DisableSecretKeyBody {
     password: String,
     secret_key: String,
@@ -161,7 +169,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/secret-key/import", post(import_secret_key))
         .route("/api/secret-key/enable", post(enable_secret_key))
         .route("/api/secret-key/disable", post(disable_secret_key))
+        .route("/api/secret-key/rotate", post(rotate_secret_key))
         .route("/api/secret-key/reveal", post(reveal_secret_key))
+        .route("/api/secret-key/emergency-kit.pdf", post(emergency_kit_pdf))
+        .route("/api/secret-key/qr.png", post(emergency_kit_qr))
         .route("/api/lock", post(lock))
         .route("/api/is-unlocked", get(is_unlocked))
         .route("/api/session", get(session))
@@ -376,6 +387,20 @@ async fn disable_secret_key(
     }
 }
 
+async fn rotate_secret_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.rotate_secret_key(&body.password, &body.secret_key) {
+        Ok(kit) => Json(kit).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
 async fn reveal_secret_key(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -387,6 +412,58 @@ async fn reveal_secret_key(
     match state.reveal_secret_key(&body.password) {
         Ok(kit) => Json(kit).into_response(),
         Err(err) => vault_error(err),
+    }
+}
+
+async fn emergency_kit_pdf(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EmergencyKitPdfBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match securevault_core::emergency_kit::render_pdf(&securevault_core::emergency_kit::EmergencyKitDoc {
+        secret_key: &body.secret_key,
+        vault_name: &body.vault_name,
+        date: &body.date,
+    }) {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "application/pdf"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"SecureVault Emergency Kit.pdf\"",
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => err_json(StatusCode::BAD_REQUEST, "PDF를 만들지 못했습니다."),
+    }
+}
+
+async fn emergency_kit_qr(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match securevault_core::emergency_kit::render_qr_png(&body.secret_key) {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"SecureVault Secret Key QR.png\"",
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => err_json(StatusCode::BAD_REQUEST, "QR 이미지를 만들지 못했습니다."),
     }
 }
 
