@@ -16,6 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum::Router;
 use securevault_core::mcp::{McpService, VaultView};
+use securevault_core::secret_key::SecretKey;
+use securevault_core::secret_key_store::{local_secret_key_store, SecretKeyStore};
 use securevault_core::sync::{self, ConflictView, SyncStatus};
 use securevault_core::vault::{self, UnlockedVault, VaultError, VaultItem};
 use secrecy::SecretString;
@@ -113,6 +115,7 @@ struct Inner {
     /// Last localhost origin seen on a passkey request. Not a listen address.
     rp_origin: Mutex<Option<String>>,
     config: Config,
+    sk_store: Box<dyn SecretKeyStore>,
 }
 
 #[derive(Clone)]
@@ -145,6 +148,7 @@ impl AppState {
         if config.mcp_enabled {
             let _ = mcp.set_listen(true, if config.port == 0 { DEFAULT_PORT } else { config.port });
         }
+        let sk_store = local_secret_key_store(&config.data_dir);
         let state = Self {
             inner: Arc::new(Inner {
                 vault_path: Mutex::new(vault_path),
@@ -166,6 +170,7 @@ impl AppState {
                 webauthn_path,
                 rp_origin: Mutex::new(None),
                 config,
+                sk_store,
             }),
         };
         let ticker = state.clone();
@@ -408,10 +413,116 @@ impl AppState {
     }
 
     pub fn unlock_vault(&self, password: &str) -> Result<(), VaultError> {
+        self.unlock_vault_with_secret_key(password, None)
+    }
+
+    pub fn unlock_vault_with_secret_key(
+        &self,
+        password: &str,
+        secret_key: Option<&str>,
+    ) -> Result<(), VaultError> {
         let path = self.vault_path();
         let secret = SecretString::new(password.to_string());
-        let unlocked = vault::unlock_file(&path, &secret)?;
+        let typed = nonempty_sk(secret_key).or_else(|| securevault_core::env_var("SECRET_KEY"));
+        let unlocked = vault::unlock_file_with_secret_key(
+            &path,
+            &secret,
+            typed.as_deref(),
+            Some(self.inner.sk_store.as_ref()),
+        )?;
+        if let Some(sk) = unlocked.secret_key.as_ref() {
+            let _ = self.inner.sk_store.store(&sk.vault_id(), sk);
+        }
         self.install_unlocked(unlocked, true)
+    }
+
+    pub fn secret_key_status(&self) -> Result<SecretKeyStatusView, VaultError> {
+        let path = self.vault_path();
+        if !path.exists() {
+            return Ok(SecretKeyStatusView {
+                enabled: false,
+                stored: false,
+                required: false,
+            });
+        }
+        let (enabled, fingerprint) = vault::peek_secret_key_header(&path)?;
+        let stored = if enabled {
+            if securevault_core::env_var("SECRET_KEY").is_some() {
+                true
+            } else if let Some(fp) = fingerprint.as_deref() {
+                match securevault_core::secret_key::vault_id_from_fingerprint_b64(fp) {
+                    Ok(id) => self.inner.sk_store.load(&id).ok().flatten().is_some(),
+                    Err(_) => false,
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        Ok(SecretKeyStatusView {
+            enabled,
+            stored,
+            required: enabled && !stored,
+        })
+    }
+
+    pub fn import_secret_key(&self, secret_key: &str) -> Result<SecretKeyStatusView, VaultError> {
+        let path = self.vault_path();
+        let (enabled, fingerprint) = vault::peek_secret_key_header(&path)?;
+        if !enabled {
+            return Err(VaultError::InvalidSecretKey);
+        }
+        let sk = SecretKey::parse(secret_key)?;
+        if Some(sk.fingerprint_b64()) != fingerprint {
+            return Err(VaultError::SecretKeyMismatch);
+        }
+        let _ = self.inner.sk_store.store(&sk.vault_id(), &sk);
+        self.secret_key_status()
+    }
+
+    pub fn enable_secret_key(&self, password: &str) -> Result<EmergencyKitView, VaultError> {
+        let path = self.vault_path();
+        let secret = SecretString::new(password.to_string());
+        let sk = self.with_unlocked_mut(|unlocked| unlocked.enable_secret_key(&secret))?;
+        let (stored, store_error) = match self.inner.sk_store.store(&sk.vault_id(), &sk) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        };
+        self.clear_prf_wrap();
+        Ok(emergency_kit_view(&path, &sk, stored, store_error))
+    }
+
+    pub fn disable_secret_key(&self, password: &str, secret_key: &str) -> Result<(), VaultError> {
+        let secret = SecretString::new(password.to_string());
+        let sk = SecretKey::parse(secret_key)?;
+        let vault_id = sk.vault_id();
+        self.with_unlocked_mut(|unlocked| unlocked.disable_secret_key(&secret, &sk))?;
+        let _ = self.inner.sk_store.delete(&vault_id);
+        self.clear_prf_wrap();
+        Ok(())
+    }
+
+    pub fn reveal_secret_key(&self, password: &str) -> Result<EmergencyKitView, VaultError> {
+        let path = self.vault_path();
+        let secret = SecretString::new(password.to_string());
+        let sk = {
+            let guard = self.inner.unlocked.lock().map_err(|_| VaultError::Locked)?;
+            let unlocked = guard.as_ref().ok_or(VaultError::Locked)?;
+            unlocked.verify_master_password(&secret)?;
+            if let Some(sk) = unlocked.secret_key.clone() {
+                sk
+            } else if let Some(fp) = unlocked.fingerprint_b64() {
+                let id = securevault_core::secret_key::vault_id_from_fingerprint_b64(&fp)?;
+                self.inner
+                    .sk_store
+                    .load(&id)?
+                    .ok_or(VaultError::SecretKeyRequired)?
+            } else {
+                return Err(VaultError::SecretKeyRequired);
+            }
+        };
+        Ok(emergency_kit_view(&path, &sk, true, None))
     }
 
     pub(crate) fn unlock_with_existing_key(&self, key: vault::VaultKey) -> Result<(), VaultError> {
@@ -437,6 +548,7 @@ impl AppState {
         } else if !unlocked.data.settings.biometrics_enabled {
             return Err(VaultError::BiometricsUnavailable);
         } else {
+            vault::load_stored_secret_key(&mut unlocked, self.inner.sk_store.as_ref());
             sync::pull_vault(&path, &mut unlocked)?;
             self.cache_settings(&unlocked.data.settings);
         }
@@ -900,6 +1012,54 @@ pub fn default_dist_dir() -> PathBuf {
     PathBuf::from("dist")
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretKeyStatusView {
+    pub enabled: bool,
+    pub stored: bool,
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyKitView {
+    pub secret_key: String,
+    pub vault_name: String,
+    pub date: String,
+    pub stored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_error: Option<String>,
+}
+
+fn nonempty_sk(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn emergency_kit_view(
+    path: &Path,
+    sk: &SecretKey,
+    stored: bool,
+    store_error: Option<String>,
+) -> EmergencyKitView {
+    let vault_name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("SecureVault")
+        .to_string();
+    let date = vault::now_rfc3339().chars().take(10).collect();
+    EmergencyKitView {
+        secret_key: sk.format_display(),
+        vault_name,
+        date,
+        stored,
+        store_error,
+    }
+}
+
 pub(crate) fn err_json(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
 }
@@ -912,7 +1072,9 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         | VaultError::BiometricsUnavailable
         | VaultError::BiometricsInvalidated
         | VaultError::PasskeySessionOnly
-        | VaultError::Cancelled => StatusCode::UNAUTHORIZED,
+        | VaultError::Cancelled
+        | VaultError::SecretKeyRequired
+        | VaultError::SecretKeyMismatch => StatusCode::UNAUTHORIZED,
         VaultError::NotFound | VaultError::ItemNotFound => StatusCode::NOT_FOUND,
         VaultError::AlreadyExists
         | VaultError::SyncPasswordRequired
@@ -925,7 +1087,11 @@ pub(crate) fn vault_error(err: VaultError) -> Response {
         | VaultError::GeneratorLength
         | VaultError::GeneratorCharset
         | VaultError::InvalidAutoLock
-        | VaultError::InvalidPasswordInterval => StatusCode::BAD_REQUEST,
+        | VaultError::InvalidPasswordInterval
+        | VaultError::InvalidSecretKey
+        | VaultError::InvalidSecretKeyPrefix
+        | VaultError::InvalidSecretKeyChecksum
+        | VaultError::SecretKeyStoreUnavailable => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_REQUEST,
     };
     err_json(status, &err.to_string())

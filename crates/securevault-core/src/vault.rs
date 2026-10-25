@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+/// On-disk format for vaults without a Secret Key. 0.2.x files use this.
 pub const VAULT_VERSION: u32 = 1;
+/// On-disk format for Secret Key (2SKD) vaults. Non-SK vaults keep writing [`VAULT_VERSION`].
+pub const VAULT_VERSION_SK: u32 = 2;
 /// Accepted when reading a file that starts with this prefix.
 /// New files do not write it. They are the historical JSON envelope, which
 /// SecureVault 0.2.0 can open.
@@ -109,6 +112,18 @@ pub enum VaultError {
     /// Magic matched, but the header version or KDF is not one this build can open.
     #[error("unsupported version")]
     UnsupportedVersion,
+    #[error("secret key required")]
+    SecretKeyRequired,
+    #[error("Secret Key가 이 금고와 맞지 않습니다")]
+    SecretKeyMismatch,
+    #[error("Secret Key 형식이 올바르지 않습니다")]
+    InvalidSecretKey,
+    #[error("Secret Key 접두사가 올바르지 않습니다")]
+    InvalidSecretKeyPrefix,
+    #[error("Secret Key 체크섬이 올바르지 않습니다")]
+    InvalidSecretKeyChecksum,
+    #[error("secret key store unavailable")]
+    SecretKeyStoreUnavailable,
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -154,6 +169,10 @@ impl KdfParams {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EncryptedVault {
     pub version: u32,
@@ -161,6 +180,12 @@ pub struct EncryptedVault {
     pub salt: String,
     pub nonce: String,
     pub ciphertext: String,
+    /// Set only on SK-enabled (v2) vaults. Omitted from 0.2.x / non-SK files.
+    #[serde(default, skip_serializing_if = "is_false", rename = "skEnabled")]
+    pub sk_enabled: bool,
+    /// First 8 bytes of SHA-256(domain || SK), standard Base64. Public.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "skFingerprint")]
+    pub sk_fingerprint: Option<String>,
 }
 
 /// Non-secret structural fields shared by conflict copies and delete snapshots.
@@ -607,6 +632,10 @@ pub struct UnlockedVault {
     pub backup_dir: PathBuf,
     /// Conflict siblings already merged in memory. Moved only after a successful save.
     pub pending_archive: Vec<PathBuf>,
+    /// Secret Key bytes when this process has them. Never serialized into the vault file.
+    pub secret_key: Option<crate::secret_key::SecretKey>,
+    /// Public SK fingerprint copied from the header so v2 files stay v2 after Touch ID unlock.
+    pub sk_fingerprint: Option<[u8; crate::secret_key::SECRET_KEY_FINGERPRINT_LEN]>,
 }
 
 fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultData) -> UnlockedVault {
@@ -624,6 +653,8 @@ fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultDa
         bound_path: PathBuf::new(),
         backup_dir: PathBuf::new(),
         pending_archive: Vec::new(),
+        secret_key: None,
+        sk_fingerprint: None,
     }
 }
 
@@ -632,18 +663,84 @@ impl UnlockedVault {
         self.data.items.clone()
     }
 
+    pub fn sk_enabled(&self) -> bool {
+        self.secret_key.is_some() || self.sk_fingerprint.is_some()
+    }
+
+    pub fn fingerprint_b64(&self) -> Option<String> {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        if let Some(sk) = &self.secret_key {
+            return Some(sk.fingerprint_b64());
+        }
+        self.sk_fingerprint.map(|fp| B64.encode(fp))
+    }
+
+    pub fn verify_master_password(&self, password: &SecretString) -> Result<(), VaultError> {
+        let argon = derive_key(password, &self.salt, &self.params)?;
+        let expected = match &self.secret_key {
+            Some(sk) => crate::secret_key::apply_2skd(&argon, sk)?,
+            None if self.sk_fingerprint.is_some() => return Err(VaultError::SecretKeyRequired),
+            None => argon,
+        };
+        if expected.as_bytes() != self.key.as_bytes() {
+            return Err(VaultError::WrongPassword);
+        }
+        Ok(())
+    }
+
+    pub fn enable_secret_key(
+        &mut self,
+        password: &SecretString,
+    ) -> Result<crate::secret_key::SecretKey, VaultError> {
+        if self.sk_enabled() {
+            return Err(VaultError::AlreadyExists);
+        }
+        self.verify_master_password(password)?;
+        let argon = derive_key(password, &self.salt, &self.params)?;
+        let sk = crate::secret_key::SecretKey::generate();
+        self.key = crate::secret_key::apply_2skd(&argon, &sk)?;
+        self.sk_fingerprint = Some(sk.fingerprint());
+        self.secret_key = Some(sk.clone());
+        Ok(sk)
+    }
+
+    pub fn disable_secret_key(
+        &mut self,
+        password: &SecretString,
+        secret_key: &crate::secret_key::SecretKey,
+    ) -> Result<(), VaultError> {
+        if !self.sk_enabled() {
+            return Ok(());
+        }
+        if let Some(fp) = self.sk_fingerprint {
+            if secret_key.fingerprint() != fp {
+                return Err(VaultError::SecretKeyMismatch);
+            }
+        }
+        let argon = derive_key(password, &self.salt, &self.params)?;
+        let current = crate::secret_key::apply_2skd(&argon, secret_key)?;
+        if current.as_bytes() != self.key.as_bytes() {
+            return Err(VaultError::WrongPassword);
+        }
+        self.key = argon;
+        self.secret_key = None;
+        self.sk_fingerprint = None;
+        Ok(())
+    }
+
     pub fn change_master_password(
         &mut self,
         current: &SecretString,
         new: &SecretString,
     ) -> Result<(), VaultError> {
-        let check_key = derive_key(current, &self.salt, &self.params)?;
-        if check_key.as_bytes() != self.key.as_bytes() {
-            return Err(VaultError::WrongPassword);
-        }
+        self.verify_master_password(current)?;
         let params = default_kdf_params();
         let salt = random_salt();
-        let key = derive_key(new, &salt, &params)?;
+        let argon = derive_key(new, &salt, &params)?;
+        let key = match &self.secret_key {
+            Some(sk) => crate::secret_key::apply_2skd(&argon, sk)?,
+            None => argon,
+        };
         self.key = key;
         self.salt = salt.to_vec();
         self.params = params;
@@ -658,6 +755,16 @@ pub fn persist_unlocked(path: &Path, unlocked: &mut UnlockedVault) -> Result<(),
 
 /// Desktop unlock path: read the file and decrypt with the master password.
 pub fn unlock_file(path: &Path, password: &SecretString) -> Result<UnlockedVault, VaultError> {
+    unlock_file_with_secret_key(path, password, None, None)
+}
+
+/// Unlock, applying 2SKD when the header says the vault has a Secret Key.
+pub fn unlock_file_with_secret_key(
+    path: &Path,
+    password: &SecretString,
+    secret_key: Option<&str>,
+    store: Option<&dyn crate::secret_key_store::SecretKeyStore>,
+) -> Result<UnlockedVault, VaultError> {
     if !path.exists() {
         if crate::sync::icloud_placeholder(path).is_some_and(|placeholder| placeholder.exists()) {
             crate::sync::prompt_icloud_download(path);
@@ -667,11 +774,94 @@ pub fn unlock_file(path: &Path, password: &SecretString) -> Result<UnlockedVault
     }
     let bytes = fs::read(path)?;
     let enc: EncryptedVault = parse_encrypted(&bytes)?;
-    let (key, salt, mut data) = unlock_with_password(&enc, password)?;
+    let sk = resolve_secret_key(&enc, secret_key, store)?;
+    let (key, salt, mut data) = unlock_with_secret(&enc, password, sk.as_ref())?;
     crate::sync::migrate_data(&mut data);
-    let mut unlocked = fresh_unlocked(key, salt, enc.kdf, data);
+    let mut unlocked = fresh_unlocked(key, salt, enc.kdf.clone(), data);
+    attach_secret_key(&mut unlocked, &enc, sk);
     unlocked.stamp = crate::sync::capture_stamp(path, unlocked.data.revision)?;
     Ok(unlocked)
+}
+
+pub fn peek_secret_key_header(path: &Path) -> Result<(bool, Option<String>), VaultError> {
+    if !path.exists() {
+        return Err(VaultError::NotFound);
+    }
+    let bytes = fs::read(path)?;
+    let enc = parse_encrypted(&bytes)?;
+    Ok((enc.sk_enabled, enc.sk_fingerprint))
+}
+
+pub fn resolve_secret_key(
+    header: &EncryptedVault,
+    typed: Option<&str>,
+    store: Option<&dyn crate::secret_key_store::SecretKeyStore>,
+) -> Result<Option<crate::secret_key::SecretKey>, VaultError> {
+    if !header.sk_enabled {
+        return Ok(None);
+    }
+    let expected = header
+        .sk_fingerprint
+        .as_deref()
+        .ok_or(VaultError::Corrupt)?;
+    let check = |sk: crate::secret_key::SecretKey| -> Result<crate::secret_key::SecretKey, VaultError> {
+        if sk.fingerprint_b64() != expected {
+            return Err(VaultError::SecretKeyMismatch);
+        }
+        Ok(sk)
+    };
+    if let Some(typed) = typed.map(str::trim).filter(|value| !value.is_empty()) {
+        return check(crate::secret_key::SecretKey::parse(typed)?).map(Some);
+    }
+    if let Some(store) = store {
+        let vault_id = crate::secret_key::vault_id_from_fingerprint_b64(expected)?;
+        match store.load(&vault_id) {
+            Ok(Some(sk)) => return check(sk).map(Some),
+            Ok(None) => {}
+            Err(VaultError::SecretKeyStoreUnavailable) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(VaultError::SecretKeyRequired)
+}
+
+pub fn load_stored_secret_key(
+    unlocked: &mut UnlockedVault,
+    store: &dyn crate::secret_key_store::SecretKeyStore,
+) {
+    if unlocked.secret_key.is_some() {
+        return;
+    }
+    let Some(fp) = unlocked.fingerprint_b64() else {
+        return;
+    };
+    let Ok(id) = crate::secret_key::vault_id_from_fingerprint_b64(&fp) else {
+        return;
+    };
+    if let Ok(Some(sk)) = store.load(&id) {
+        if sk.fingerprint_b64() == fp {
+            unlocked.secret_key = Some(sk);
+        }
+    }
+}
+
+fn attach_secret_key(
+    unlocked: &mut UnlockedVault,
+    enc: &EncryptedVault,
+    sk: Option<crate::secret_key::SecretKey>,
+) {
+    if let Some(sk) = sk {
+        unlocked.sk_fingerprint = Some(sk.fingerprint());
+        unlocked.secret_key = Some(sk);
+        return;
+    }
+    if enc.sk_enabled {
+        if let Some(fp) = enc.sk_fingerprint.as_deref() {
+            if let Ok(bytes) = crate::secret_key::decode_fingerprint_b64(fp) {
+                unlocked.sk_fingerprint = Some(bytes);
+            }
+        }
+    }
 }
 
 /// Desktop create path: write a new empty vault file and return it unlocked.
@@ -725,12 +915,55 @@ pub fn validate_item_type(item_type: &str) -> Result<(), VaultError> {
     }
 }
 
-fn aad_bytes(version: u32, kdf: &KdfParams, salt_b64: &str, nonce_b64: &str) -> Vec<u8> {
-    format!(
-        "v{}|alg={}|m={}|t={}|p={}|salt={}|nonce={}",
-        version, kdf.algorithm, kdf.m, kdf.t, kdf.p, salt_b64, nonce_b64
-    )
-    .into_bytes()
+fn aad_bytes(
+    version: u32,
+    kdf: &KdfParams,
+    salt_b64: &str,
+    nonce_b64: &str,
+    sk_fingerprint: Option<&str>,
+) -> Vec<u8> {
+    match sk_fingerprint {
+        Some(fp) => format!(
+            "v{}|alg={}|m={}|t={}|p={}|salt={}|nonce={}|skfp={}",
+            version, kdf.algorithm, kdf.m, kdf.t, kdf.p, salt_b64, nonce_b64, fp
+        )
+        .into_bytes(),
+        None => format!(
+            "v{}|alg={}|m={}|t={}|p={}|salt={}|nonce={}",
+            version, kdf.algorithm, kdf.m, kdf.t, kdf.p, salt_b64, nonce_b64
+        )
+        .into_bytes(),
+    }
+}
+
+fn aad_for(file: &EncryptedVault) -> Vec<u8> {
+    let fp = if file.sk_enabled {
+        file.sk_fingerprint.as_deref()
+    } else {
+        None
+    };
+    aad_bytes(file.version, &file.kdf, &file.salt, &file.nonce, fp)
+}
+
+pub fn derive_vault_key(
+    password: &SecretString,
+    salt: &[u8],
+    params: &KdfParams,
+    secret_key: Option<&crate::secret_key::SecretKey>,
+) -> Result<VaultKey, VaultError> {
+    let argon = derive_key(password, salt, params)?;
+    match secret_key {
+        Some(sk) => crate::secret_key::apply_2skd(&argon, sk),
+        None => Ok(argon),
+    }
+}
+
+pub fn secret_key_headers_match(enc: &EncryptedVault, unlocked: &UnlockedVault) -> bool {
+    match (enc.sk_enabled, unlocked.sk_enabled()) {
+        (false, false) => true,
+        (true, true) => enc.sk_fingerprint.as_deref() == unlocked.fingerprint_b64().as_deref(),
+        _ => false,
+    }
 }
 
 pub fn derive_key(
@@ -757,10 +990,26 @@ pub fn encrypt_vault(
     params: &KdfParams,
     salt: &[u8],
 ) -> Result<EncryptedVault, VaultError> {
+    encrypt_vault_ex(plaintext, key, params, salt, None)
+}
+
+pub fn encrypt_vault_ex(
+    plaintext: &[u8],
+    key: &VaultKey,
+    params: &KdfParams,
+    salt: &[u8],
+    sk_fingerprint: Option<&[u8]>,
+) -> Result<EncryptedVault, VaultError> {
     let nonce = random_nonce();
     let salt_b64 = B64.encode(salt);
     let nonce_b64 = B64.encode(nonce);
-    let aad = aad_bytes(VAULT_VERSION, params, &salt_b64, &nonce_b64);
+    let (version, sk_enabled, sk_fp) = match sk_fingerprint {
+        Some(fp) if fp.len() == crate::secret_key::SECRET_KEY_FINGERPRINT_LEN => {
+            (VAULT_VERSION_SK, true, Some(B64.encode(fp)))
+        }
+        _ => (VAULT_VERSION, false, None),
+    };
+    let aad = aad_bytes(version, params, &salt_b64, &nonce_b64, sk_fp.as_deref());
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes()).map_err(|_| VaultError::Crypto)?;
     let xnonce = XNonce::from_slice(&nonce);
     let ciphertext = cipher
@@ -773,11 +1022,13 @@ pub fn encrypt_vault(
         )
         .map_err(|_| VaultError::Crypto)?;
     Ok(EncryptedVault {
-        version: VAULT_VERSION,
+        version,
         kdf: params.clone(),
         salt: salt_b64,
         nonce: nonce_b64,
         ciphertext: B64.encode(ciphertext),
+        sk_enabled,
+        sk_fingerprint: sk_fp,
     })
 }
 
@@ -787,7 +1038,7 @@ pub fn decrypt_vault(file: &EncryptedVault, key: &VaultKey) -> Result<Vec<u8>, V
         return Err(VaultError::Tampered);
     }
     let ciphertext = B64.decode(&file.ciphertext)?;
-    let aad = aad_bytes(file.version, &file.kdf, &file.salt, &file.nonce);
+    let aad = aad_for(file);
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes()).map_err(|_| VaultError::Crypto)?;
     let xnonce = XNonce::from_slice(&nonce);
     cipher
@@ -811,6 +1062,22 @@ pub fn encrypt_data(
     encrypt_vault(&plaintext, key, params, salt)
 }
 
+pub fn encrypt_unlocked(unlocked: &UnlockedVault) -> Result<EncryptedVault, VaultError> {
+    let plaintext = serde_json::to_vec(&unlocked.data)?;
+    let fp = unlocked
+        .secret_key
+        .as_ref()
+        .map(|sk| sk.fingerprint())
+        .or(unlocked.sk_fingerprint);
+    encrypt_vault_ex(
+        &plaintext,
+        &unlocked.key,
+        &unlocked.params,
+        &unlocked.salt,
+        fp.as_ref().map(|value| value.as_slice()),
+    )
+}
+
 pub fn decrypt_data(file: &EncryptedVault, key: &VaultKey) -> Result<VaultData, VaultError> {
     let plain = decrypt_vault(file, key)?;
     let mut data: VaultData = serde_json::from_slice(&plain)?;
@@ -831,7 +1098,8 @@ pub fn unlock_file_with_key(path: &Path, key: &VaultKey) -> Result<UnlockedVault
     if salt.len() != SALT_LEN {
         return Err(VaultError::Tampered);
     }
-    let mut unlocked = fresh_unlocked(key.clone(), salt, enc.kdf, data);
+    let mut unlocked = fresh_unlocked(key.clone(), salt, enc.kdf.clone(), data);
+    attach_secret_key(&mut unlocked, &enc, None);
     unlocked.stamp = crate::sync::capture_stamp(path, unlocked.data.revision)?;
     Ok(unlocked)
 }
@@ -840,11 +1108,28 @@ pub fn unlock_with_password(
     file: &EncryptedVault,
     password: &SecretString,
 ) -> Result<(VaultKey, Vec<u8>, VaultData), VaultError> {
+    unlock_with_secret(file, password, None)
+}
+
+pub fn unlock_with_secret(
+    file: &EncryptedVault,
+    password: &SecretString,
+    secret_key: Option<&crate::secret_key::SecretKey>,
+) -> Result<(VaultKey, Vec<u8>, VaultData), VaultError> {
+    if file.sk_enabled {
+        let expected = file.sk_fingerprint.as_deref().ok_or(VaultError::Corrupt)?;
+        let Some(sk) = secret_key else {
+            return Err(VaultError::SecretKeyRequired);
+        };
+        if sk.fingerprint_b64() != expected {
+            return Err(VaultError::SecretKeyMismatch);
+        }
+    }
     let salt = B64.decode(&file.salt)?;
     if salt.len() != SALT_LEN {
         return Err(VaultError::Tampered);
     }
-    let key = derive_key(password, &salt, &file.kdf)?;
+    let key = derive_vault_key(password, &salt, &file.kdf, secret_key)?;
     match decrypt_data(file, &key) {
         Ok(data) => Ok((key, salt, data)),
         Err(VaultError::Tampered) => Err(VaultError::WrongPassword),
@@ -934,8 +1219,25 @@ fn header_version(json: &[u8]) -> Result<u32, VaultError> {
         .get("version")
         .and_then(|v| v.as_u64())
         .ok_or(VaultError::Corrupt)?;
-    if version == 0 || version > u64::from(VAULT_VERSION) {
+    if version == 0 || version > u64::from(VAULT_VERSION_SK) {
         return Err(VaultError::UnsupportedVersion);
+    }
+    if version == u64::from(VAULT_VERSION_SK) {
+        let enabled = obj
+            .get("skEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !enabled {
+            return Err(VaultError::Corrupt);
+        }
+        let fingerprint = obj
+            .get("skFingerprint")
+            .and_then(|v| v.as_str())
+            .ok_or(VaultError::Corrupt)?;
+        let fp = B64.decode(fingerprint).map_err(|_| VaultError::Corrupt)?;
+        if fp.len() != crate::secret_key::SECRET_KEY_FINGERPRINT_LEN {
+            return Err(VaultError::Corrupt);
+        }
     }
     let kdf = obj.get("kdf").and_then(|v| v.as_object()).ok_or(VaultError::Corrupt)?;
     let algorithm = kdf
@@ -1421,5 +1723,117 @@ mod tests {
         prefixed.extend_from_slice(&bytes);
         assert_eq!(validate_vault_header(&prefixed).unwrap(), VAULT_VERSION);
         assert_eq!(parse_encrypted(&prefixed).unwrap(), enc);
+    }
+
+    #[test]
+    fn secret_key_roundtrip_wrong_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("sk-master-pass");
+        let mut unlocked = create_vault_at(&path, &password).unwrap();
+        unlocked.data.items.push(sample_item());
+        let sk = unlocked.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
+
+        let bytes = fs::read(&path).unwrap();
+        let enc = parse_encrypted(&bytes).unwrap();
+        assert_eq!(enc.version, VAULT_VERSION_SK);
+        assert!(enc.sk_enabled);
+        assert_eq!(enc.sk_fingerprint.as_deref(), Some(sk.fingerprint_b64().as_str()));
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        assert!(!json.contains(&sk.format_display()));
+        assert!(!json.contains(&data_encoding::BASE32_NOPAD.encode(sk.as_bytes())));
+
+        let loaded = unlock_file_with_secret_key(&path, &password, Some(&sk.format_display()), None).unwrap();
+        assert_eq!(loaded.data.items, unlocked.data.items);
+        assert!(loaded.sk_enabled());
+
+        let missing = unlock_file(&path, &password).unwrap_err();
+        assert!(matches!(missing, VaultError::SecretKeyRequired));
+
+        let other = crate::secret_key::SecretKey::generate();
+        let mismatch = unlock_file_with_secret_key(&path, &password, Some(&other.format_display()), None)
+            .unwrap_err();
+        assert!(matches!(mismatch, VaultError::SecretKeyMismatch));
+        assert_eq!(mismatch.to_string(), "Secret Key가 이 금고와 맞지 않습니다");
+
+        let wrong_pw = unlock_file_with_secret_key(&path, &secret("nope"), Some(&sk.format_display()), None)
+            .unwrap_err();
+        assert!(matches!(wrong_pw, VaultError::WrongPassword));
+    }
+
+    #[test]
+    fn open_0_2_x_vault_from_old_code_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("legacy-0.2.x-master");
+        let params = default_kdf_params();
+        let salt = random_salt();
+        let key = derive_key(&password, &salt, &params).unwrap();
+        let data = VaultData {
+            items: vec![sample_item()],
+            ..VaultData::default()
+        };
+        let enc = encrypt_data(&data, &key, &params, &salt).unwrap();
+        assert_eq!(enc.version, VAULT_VERSION);
+        assert!(!enc.sk_enabled);
+        assert!(enc.sk_fingerprint.is_none());
+        let bytes = serialize_encrypted(&enc).unwrap();
+        assert!(!bytes.starts_with(b"KHV1"));
+        atomic_write(&path, &bytes).unwrap();
+
+        let loaded = unlock_file(&path, &password).unwrap();
+        assert_eq!(loaded.data.items[0].title, "Example");
+        assert_eq!(loaded.data.items[0].password.as_deref(), Some("secret-pass"));
+        assert!(!loaded.sk_enabled());
+        let json = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+        assert!(!json.contains("skEnabled"));
+        assert!(!json.contains("skFingerprint"));
+    }
+
+    #[test]
+    fn enable_disable_secret_key_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("migrate-sk-master");
+        let mut unlocked = create_vault_at(&path, &password).unwrap();
+        unlocked.data.items.push(sample_item());
+        persist_unlocked(&path, &mut unlocked).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert_eq!(parse_encrypted(&before).unwrap().version, VAULT_VERSION);
+
+        let sk = unlocked.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
+        let enabled = parse_encrypted(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(enabled.version, VAULT_VERSION_SK);
+        assert!(enabled.sk_enabled);
+
+        let mut loaded =
+            unlock_file_with_secret_key(&path, &password, Some(&sk.format_display()), None).unwrap();
+        loaded.disable_secret_key(&password, &sk).unwrap();
+        persist_unlocked(&path, &mut loaded).unwrap();
+        let disabled = parse_encrypted(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disabled.version, VAULT_VERSION);
+        assert!(!disabled.sk_enabled);
+        assert!(disabled.sk_fingerprint.is_none());
+        let again = unlock_file(&path, &password).unwrap();
+        assert_eq!(again.data.items[0].title, "Example");
+        assert!(!again.sk_enabled());
+    }
+
+    #[test]
+    fn secret_key_store_used_on_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("store-unlock");
+        let mut unlocked = create_vault_at(&path, &password).unwrap();
+        let sk = unlocked.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
+        use crate::secret_key_store::SecretKeyStore;
+        let store = crate::secret_key_store::MemorySecretKeyStore::new();
+        store.store(&sk.vault_id(), &sk).unwrap();
+        let loaded = unlock_file_with_secret_key(&path, &password, None, Some(&store)).unwrap();
+        assert!(loaded.sk_enabled());
+        assert_eq!(loaded.secret_key.as_ref().unwrap().as_bytes(), sk.as_bytes());
     }
 }

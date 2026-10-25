@@ -7,6 +7,8 @@ import {
   changeMasterPassword,
   copyToClipboard,
   deleteItem,
+  disableSecretKey,
+  enableSecretKey,
   exportVault,
   generatePassword,
   getVaultSettings,
@@ -15,6 +17,8 @@ import {
   moveItem,
   pickOpenPath,
   pickSavePath,
+  revealSecretKey,
+  secretKeyStatus,
   updateItem,
   updateVaultSettings,
 } from "../api";
@@ -25,6 +29,7 @@ import type {
   ImportMode,
   ItemDraft,
   ItemType,
+  EmergencyKit as EmergencyKitData,
   SettingsPatch,
   SyncStatus,
   Toast,
@@ -32,6 +37,7 @@ import type {
   VaultSettings,
 } from "../types";
 import BuildStamp from "./BuildStamp";
+import EmergencyKit from "./EmergencyKit";
 import Logo from "./Logo";
 import McpSettings from "./McpSettings";
 import SyncSettings from "./SyncSettings";
@@ -140,6 +146,8 @@ export default function MainScreen({
   const [genForField, setGenForField] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | "end" | null>(null);
+  const [kit, setKit] = useState<EmergencyKitData | null>(null);
+  const [kitViewOnly, setKitViewOnly] = useState(false);
   const moving = useRef(false);
 
   const filtered = useMemo(() => {
@@ -455,6 +463,10 @@ export default function MainScreen({
               onRequireUnlock={onRequireUnlock}
               onToast={onToast}
               onReload={onReload}
+              onKit={(next, viewOnly) => {
+                setKitViewOnly(viewOnly);
+                setKit(next);
+              }}
             />
           ) : editing === "new" || editing === "edit" ? (
             <ItemEditor
@@ -521,6 +533,9 @@ export default function MainScreen({
             </div>
           </div>
         </div>
+      ) : null}
+      {kit ? (
+        <EmergencyKit kit={kit} viewOnly={kitViewOnly} onDone={() => setKit(null)} />
       ) : null}
       <footer className="app-footer">
         <BuildStamp />
@@ -939,6 +954,7 @@ function SettingsPanel({
   onRequireUnlock,
   onToast,
   onReload,
+  onKit,
 }: {
   settings: VaultSettings;
   syncStatus: SyncStatus | null;
@@ -947,6 +963,7 @@ function SettingsPanel({
   onRequireUnlock: () => void;
   onToast: (toast: Omit<Toast, "id">) => void;
   onReload: () => Promise<void>;
+  onKit: (kit: EmergencyKitData, viewOnly: boolean) => void;
 }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -957,6 +974,10 @@ function SettingsPanel({
   const [intervalDays, setIntervalDays] = useState(String(settings.passwordIntervalDays));
   const [bio, setBio] = useState<BiometricStatus | null>(null);
   const [bioBusy, setBioBusy] = useState(false);
+  const [skEnabled, setSkEnabled] = useState(false);
+  const [skBusy, setSkBusy] = useState(false);
+  const [skPassword, setSkPassword] = useState("");
+  const [skValue, setSkValue] = useState("");
 
   useEffect(() => {
     setIntervalDays(String(settings.passwordIntervalDays));
@@ -973,6 +994,18 @@ function SettingsPanel({
       cancelled = true;
     };
   }, [settings.biometricsEnabled]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void secretKeyStatus()
+      .then((status) => {
+        if (!cancelled) setSkEnabled(status.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function savePatch(patch: SettingsPatch) {
     try {
@@ -1000,6 +1033,52 @@ function SettingsPanel({
       onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
     } finally {
       setBioBusy(false);
+    }
+  }
+
+  async function handleEnableSk(e: FormEvent) {
+    e.preventDefault();
+    setSkBusy(true);
+    try {
+      const nextKit = await enableSecretKey(skPassword);
+      setSkPassword("");
+      setSkEnabled(true);
+      onKit(nextKit, false);
+      onToast({ kind: "ok", message: "Secret Key를 켰습니다. 비상 키트를 보관하세요." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function handleRevealSk(e: FormEvent) {
+    e.preventDefault();
+    setSkBusy(true);
+    try {
+      const nextKit = await revealSecretKey(skPassword);
+      setSkPassword("");
+      onKit(nextKit, true);
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
+    }
+  }
+
+  async function handleDisableSk(e: FormEvent) {
+    e.preventDefault();
+    setSkBusy(true);
+    try {
+      await disableSecretKey(skPassword, skValue);
+      setSkPassword("");
+      setSkValue("");
+      setSkEnabled(false);
+      onToast({ kind: "ok", message: "Secret Key를 껐습니다." });
+    } catch (err) {
+      onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setSkBusy(false);
     }
   }
 
@@ -1150,6 +1229,71 @@ function SettingsPanel({
         {bio?.platform === "unsupported" ? (
           <p className="lede">이 환경에서는 생체 인증을 사용할 수 없습니다. Linux에서는 꺼진 상태로 둡니다.</p>
         ) : null}
+      </div>
+      <div className="card">
+        <h3>Secret Key</h3>
+        <p className="lede">
+          1Password처럼 마스터 비밀번호와 함께 쓰는 두 번째 비밀입니다. 금고 파일이나 동기화 폴더에는 저장되지
+          않습니다.
+        </p>
+        {skEnabled ? (
+          <>
+            <form onSubmit={handleRevealSk}>
+              <label className="field">
+                <span>마스터 비밀번호</span>
+                <input
+                  type="password"
+                  value={skPassword}
+                  onChange={(e) => setSkPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+              <button className="btn" type="submit" disabled={skBusy}>
+                Secret Key / QR 보기
+              </button>
+            </form>
+            <form onSubmit={handleDisableSk}>
+              <label className="field">
+                <span>마스터 비밀번호</span>
+                <input
+                  type="password"
+                  value={skPassword}
+                  onChange={(e) => setSkPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+              <label className="field">
+                <span>Secret Key</span>
+                <textarea
+                  className="secret-key-display"
+                  rows={3}
+                  value={skValue}
+                  onChange={(e) => setSkValue(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <button className="btn btn-danger" type="submit" disabled={skBusy}>
+                Secret Key 끄기
+              </button>
+            </form>
+          </>
+        ) : (
+          <form onSubmit={handleEnableSk}>
+            <label className="field">
+              <span>마스터 비밀번호 다시 확인</span>
+              <input
+                type="password"
+                value={skPassword}
+                onChange={(e) => setSkPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <button className="btn btn-primary" type="submit" disabled={skBusy}>
+              Secret Key 켜기
+            </button>
+          </form>
+        )}
       </div>
       <form className="card" onSubmit={handleChangePassword}>
         <h3>마스터 비밀번호 변경</h3>

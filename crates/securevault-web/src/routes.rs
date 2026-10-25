@@ -24,6 +24,27 @@ use crate::{err_json, vault_error, AppState};
 #[serde(rename_all = "camelCase")]
 struct PasswordBody {
     password: String,
+    #[serde(default)]
+    secret_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretKeyBody {
+    secret_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnableSecretKeyBody {
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisableSecretKeyBody {
+    password: String,
+    secret_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +157,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/vaults/open", post(open_existing_vault))
         .route("/api/create-vault", post(create_vault))
         .route("/api/unlock", post(unlock))
+        .route("/api/secret-key/status", get(secret_key_status))
+        .route("/api/secret-key/import", post(import_secret_key))
+        .route("/api/secret-key/enable", post(enable_secret_key))
+        .route("/api/secret-key/disable", post(disable_secret_key))
+        .route("/api/secret-key/reveal", post(reveal_secret_key))
         .route("/api/lock", post(lock))
         .route("/api/is-unlocked", get(is_unlocked))
         .route("/api/session", get(session))
@@ -259,7 +285,7 @@ async fn unlock(
     if let Some(wait) = state.check_login_backoff(&ip) {
         return too_many(wait);
     }
-    match state.unlock_vault(&body.password) {
+    match state.unlock_vault_with_secret_key(&body.password, body.secret_key.as_deref()) {
         Ok(()) => {
             state.clear_login_failures(&ip);
             session_ok(&state, StatusCode::OK)
@@ -299,6 +325,69 @@ async fn lock(State(state): State<AppState>, headers: HeaderMap) -> Response {
 async fn is_unlocked(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let unlocked = state.lookup_session(&headers).is_some() && state.is_unlocked();
     Json(unlocked)
+}
+
+async fn secret_key_status(State(state): State<AppState>) -> Response {
+    match state.secret_key_status() {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn import_secret_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_origin(&headers) {
+        return resp;
+    }
+    match state.import_secret_key(&body.secret_key) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn enable_secret_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EnableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.enable_secret_key(&body.password) {
+        Ok(kit) => Json(kit).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn disable_secret_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.disable_secret_key(&body.password, &body.secret_key) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => vault_error(err),
+    }
+}
+
+async fn reveal_secret_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EnableSecretKeyBody>,
+) -> Response {
+    if let Err(resp) = state.require_unlocked_session(&headers, true) {
+        return resp;
+    }
+    match state.reveal_secret_key(&body.password) {
+        Ok(kit) => Json(kit).into_response(),
+        Err(err) => vault_error(err),
+    }
 }
 
 async fn about() -> impl IntoResponse {

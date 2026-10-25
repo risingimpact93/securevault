@@ -642,7 +642,11 @@ pub fn merge_with_password(
     let main_path = normalize_path(main);
     let bytes = fs::read(&foreign_path)?;
     let enc = parse_encrypted(&bytes)?;
-    let (_key, _salt, mut data) = vault::unlock_with_password(&enc, password)?;
+    if !vault::secret_key_headers_match(&enc, unlocked) {
+        return Err(VaultError::SyncPasswordRequired);
+    }
+    let (_key, _salt, mut data) =
+        vault::unlock_with_secret(&enc, password, unlocked.secret_key.as_ref())?;
     migrate_data(&mut data);
     let file_revision = data.revision;
     merge_vault(&mut unlocked.data, &data);
@@ -703,6 +707,17 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
         let mut incorporated_revision = unlocked.data.revision;
 
         if !disk_matches {
+            if !vault::secret_key_headers_match(&enc, unlocked) {
+                pending.push(path.to_string_lossy().into_owned());
+                collect_locked_siblings(path, &mut pending);
+                unlocked.pending_password_files = pending;
+                unlocked.waiting_icloud = false;
+                unlocked.sync_error = None;
+                if force_write {
+                    return Err(VaultError::SyncPasswordRequired);
+                }
+                return Ok(());
+            }
             match vault::decrypt_data(&enc, &unlocked.key) {
                 Ok(mut remote) => {
                     migrate_data(&mut remote);
@@ -757,6 +772,10 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
                     continue;
                 }
             };
+            if !vault::secret_key_headers_match(&sibling_enc, unlocked) {
+                pending.push(sibling.to_string_lossy().into_owned());
+                continue;
+            }
             match vault::decrypt_data(&sibling_enc, &unlocked.key) {
                 Ok(mut remote) => {
                     migrate_data(&mut remote);
@@ -816,7 +835,7 @@ fn write_current(path: &Path, unlocked: &mut UnlockedVault) -> Result<(), VaultE
     migrate_data(&mut unlocked.data);
     unlocked.data.revision = unlocked.data.revision.saturating_add(1);
     unlocked.data.device_id = unlocked.device_id.clone();
-    let enc = vault::encrypt_data(&unlocked.data, &unlocked.key, &unlocked.params, &unlocked.salt)?;
+    let enc = vault::encrypt_unlocked(unlocked)?;
     let bytes = vault::serialize_encrypted(&enc)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2345,6 +2364,57 @@ mod tests {
         let still = vault::unlock_file(&path, &secret("other-master")).unwrap();
         assert!(still.data.items.iter().all(|item| item.title != "NewLocal"));
         assert!(still.data.items.iter().any(|item| item.title == "OtherOnly"));
+    }
+
+    #[test]
+    fn secret_key_mismatch_is_preserved_like_different_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let mut main = vault::create_vault_at(&path, &secret("password-a")).unwrap();
+        main.device_id = "device-a".to_string();
+        main.data.items.push(live_item(
+            "local",
+            "Local",
+            "2026-07-01T00:00:00Z",
+            "device-a",
+            &[("device-a", 1)],
+        ));
+        let sk_a = main.enable_secret_key(&secret("password-a")).unwrap();
+        main.dirty = true;
+        save_vault(&path, &mut main).unwrap();
+
+        let sibling = dir.path().join("vault 2.khv");
+        let mut other = vault::create_vault_at(&sibling, &secret("password-a")).unwrap();
+        other.device_id = "device-b".to_string();
+        other.data.items.push(live_item(
+            "foreign",
+            "Foreign",
+            "2026-07-02T00:00:00Z",
+            "device-b",
+            &[("device-b", 1)],
+        ));
+        let _sk_b = other.enable_secret_key(&secret("password-a")).unwrap();
+        other.dirty = true;
+        save_vault(&sibling, &mut other).unwrap();
+
+        let mut handle = vault::unlock_file_with_secret_key(
+            &path,
+            &secret("password-a"),
+            Some(&sk_a.format_display()),
+            None,
+        )
+        .unwrap();
+        handle.device_id = "device-a".to_string();
+        save_vault(&path, &mut handle).unwrap();
+        assert!(handle.data.items.iter().all(|item| item.id != "foreign"));
+        assert!(sibling.exists(), "a different Secret Key must not be archived");
+        assert!(handle
+            .pending_password_files
+            .iter()
+            .any(|pending| pending.contains("vault 2.khv")));
+        let err = merge_with_password(&path, &sibling, &secret("password-a"), &mut handle).unwrap_err();
+        assert!(matches!(err, VaultError::SyncPasswordRequired));
+        assert!(sibling.exists());
     }
 
     #[test]

@@ -113,6 +113,20 @@ export interface SettingsPatch {
   passwordIntervalDays?: number;
 }
 
+export interface SecretKeyStatus {
+  enabled: boolean;
+  stored: boolean;
+  required: boolean;
+}
+
+export interface EmergencyKit {
+  secretKey: string;
+  vaultName: string;
+  date: string;
+  stored: boolean;
+  storeError?: string;
+}
+
 export interface DiscoveredVault {
   path: string;
   name: string;

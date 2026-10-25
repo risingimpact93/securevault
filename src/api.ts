@@ -15,7 +15,9 @@ import type {
   SyncStatus,
   AppBuild,
   DiscoveredVault,
+  EmergencyKit,
   OpenVaultStatus,
+  SecretKeyStatus,
   VaultItem,
   VaultLocationMode,
   VaultSettings,
@@ -55,6 +57,12 @@ export function mapError(message: string): string {
     "waiting for iCloud download": "iCloud에서 금고 파일을 내려받는 중입니다. 잠시 후 다시 시도하세요.",
     "path must be absolute": "경로는 절대 경로여야 합니다.",
     "mode must be move or open": "이동 또는 열기만 할 수 있습니다.",
+    "secret key required": "Secret Key가 필요합니다.",
+    "Secret Key가 이 금고와 맞지 않습니다": "Secret Key가 이 금고와 맞지 않습니다.",
+    "Secret Key 형식이 올바르지 않습니다": "Secret Key 형식이 올바르지 않습니다.",
+    "Secret Key 접두사가 올바르지 않습니다": "Secret Key 접두사가 올바르지 않습니다.",
+    "Secret Key 체크섬이 올바르지 않습니다": "Secret Key 체크섬이 올바르지 않습니다.",
+    "secret key store unavailable": "Secret Key를 이 기기에 저장하지 못했습니다. 잠금 해제할 때마다 입력하세요.",
   };
   return table[message] ?? message;
 }
@@ -331,12 +339,52 @@ export async function createVault(password: string): Promise<void> {
   });
 }
 
-export async function unlock(password: string): Promise<void> {
+export async function unlock(password: string, secretKey?: string): Promise<void> {
   if (isTauri()) {
-    await invoke("unlock", { password });
+    await invoke("unlock", { password, secretKey: secretKey || null });
     return;
   }
   await http("/api/unlock", {
+    method: "POST",
+    body: JSON.stringify({ password, secretKey: secretKey || undefined }),
+  });
+}
+
+export async function secretKeyStatus(): Promise<SecretKeyStatus> {
+  if (isTauri()) return invoke<SecretKeyStatus>("secret_key_status");
+  return http<SecretKeyStatus>("/api/secret-key/status");
+}
+
+export async function importSecretKey(secretKey: string): Promise<SecretKeyStatus> {
+  if (isTauri()) return invoke<SecretKeyStatus>("import_secret_key", { secretKey });
+  return http<SecretKeyStatus>("/api/secret-key/import", {
+    method: "POST",
+    body: JSON.stringify({ secretKey }),
+  });
+}
+
+export async function enableSecretKey(password: string): Promise<EmergencyKit> {
+  if (isTauri()) return invoke<EmergencyKit>("enable_secret_key", { password });
+  return http<EmergencyKit>("/api/secret-key/enable", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function disableSecretKey(password: string, secretKey: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("disable_secret_key", { password, secretKey });
+    return;
+  }
+  await http("/api/secret-key/disable", {
+    method: "POST",
+    body: JSON.stringify({ password, secretKey }),
+  });
+}
+
+export async function revealSecretKey(password: string): Promise<EmergencyKit> {
+  if (isTauri()) return invoke<EmergencyKit>("reveal_secret_key", { password });
+  return http<EmergencyKit>("/api/secret-key/reveal", {
     method: "POST",
     body: JSON.stringify({ password }),
   });

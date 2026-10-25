@@ -11,6 +11,7 @@ import {
   lock,
   mapError,
   respondMcpApproval,
+  secretKeyStatus,
   syncStatus as fetchSyncStatus,
   touchActivity,
   unlock,
@@ -18,12 +19,13 @@ import {
 } from "./api";
 import ApprovalModal, { DEMO_APPROVAL } from "./components/ApprovalModal";
 import MainScreen from "./components/MainScreen";
+import SecretKeyScreen from "./components/SecretKeyScreen";
 import SetupScreen from "./components/SetupScreen";
 import UnlockScreen from "./components/UnlockScreen";
 import type { ApprovalRequest, SyncStatus, Toast, VaultItem, VaultSettings } from "./types";
 import { DEFAULT_VAULT_SETTINGS } from "./types";
 
-type Screen = "loading" | "setup" | "unlock" | "main";
+type Screen = "loading" | "setup" | "secret-key" | "unlock" | "main";
 type Theme = "dark" | "light";
 
 const THEME_KEY = "securevault.theme";
@@ -41,6 +43,7 @@ export default function App() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [demoDismissed, setDemoDismissed] = useState(false);
+  const [pendingSecretKey, setPendingSecretKey] = useState("");
   const toastSeq = useRef(1);
   const seenGeneration = useRef<number | null>(null);
   const idleTimer = useRef<number | null>(null);
@@ -93,7 +96,9 @@ export default function App() {
       return null;
     });
     setItems([]);
-    setScreen("unlock");
+    void secretKeyStatus()
+      .then((sk) => setScreen(sk.required ? "secret-key" : "unlock"))
+      .catch(() => setScreen("unlock"));
   }, []);
 
   const handleLock = useCallback(async () => {
@@ -253,11 +258,21 @@ export default function App() {
           setScreen("main");
           return;
         }
-        setScreen(exists ? "unlock" : "setup");
+        if (!exists) {
+          setScreen("setup");
+          return;
+        }
+        const sk = await secretKeyStatus().catch(() => null);
+        setScreen(sk?.required ? "secret-key" : "unlock");
       } catch {
         if (!cancelled) {
           const exists = await vaultExists().catch(() => false);
-          setScreen(exists ? "unlock" : "setup");
+          if (!exists) {
+            setScreen("setup");
+            return;
+          }
+          const sk = await secretKeyStatus().catch(() => null);
+          setScreen(sk?.required ? "secret-key" : "unlock");
         }
       }
     })();
@@ -339,10 +354,15 @@ export default function App() {
 
   async function handleUnlock(password: string) {
     try {
-      await unlock(password);
+      await unlock(password, pendingSecretKey || undefined);
+      setPendingSecretKey("");
       await enterMain();
     } catch (e) {
-      throw new Error(mapError(e instanceof Error ? e.message : String(e)));
+      const message = e instanceof Error ? e.message : String(e);
+      if (message === "secret key required") {
+        setScreen("secret-key");
+      }
+      throw new Error(mapError(message));
     }
   }
 
@@ -359,7 +379,22 @@ export default function App() {
     <>
       {screen === "loading" ? <div className="auth-wrap">불러오는 중…</div> : null}
       {screen === "setup" ? (
-        <SetupScreen onCreate={handleCreate} onOpened={() => setScreen("unlock")} />
+        <SetupScreen
+          onCreate={handleCreate}
+          onOpened={() => {
+            void secretKeyStatus()
+              .then((sk) => setScreen(sk.required ? "secret-key" : "unlock"))
+              .catch(() => setScreen("unlock"));
+          }}
+        />
+      ) : null}
+      {screen === "secret-key" ? (
+        <SecretKeyScreen
+          onReady={(secretKey) => {
+            setPendingSecretKey(secretKey);
+            setScreen("unlock");
+          }}
+        />
       ) : null}
       {screen === "unlock" ? <UnlockScreen onUnlock={handleUnlock} onBiometric={handleBiometric} /> : null}
       {screen === "main" ? (

@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use securevault_core::secret_key::SecretKey;
+use securevault_core::secret_key_store::{local_secret_key_store, SecretKeyStore};
 use securevault_core::sync::{self, ConflictView, SyncStatus};
 use securevault_core::vault::{
     self, generate_password as vault_generate_password, import_bytes, mark_password_unlock, new_id,
@@ -197,6 +199,101 @@ fn persist(app: &AppHandle, path: &Path, unlocked: &mut UnlockedVault) -> Result
     Ok(())
 }
 
+fn sk_store(app: &AppHandle) -> Result<Box<dyn SecretKeyStore>, String> {
+    let local = ensure_local(app)?;
+    Ok(local_secret_key_store(&local.data_dir))
+}
+
+fn env_secret_key() -> Option<String> {
+    securevault_core::env_var("SECRET_KEY")
+}
+
+fn vault_display_name(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("SecureVault")
+        .to_string()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretKeyStatusView {
+    enabled: bool,
+    stored: bool,
+    required: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmergencyKitView {
+    secret_key: String,
+    vault_name: String,
+    date: String,
+    stored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store_error: Option<String>,
+}
+
+fn emergency_kit(
+    path: &Path,
+    sk: &SecretKey,
+    stored: bool,
+    store_error: Option<String>,
+) -> EmergencyKitView {
+    EmergencyKitView {
+        secret_key: sk.format_display(),
+        vault_name: vault_display_name(path),
+        date: chrono_date(),
+        stored,
+        store_error,
+    }
+}
+
+fn chrono_date() -> String {
+    now_rfc3339().chars().take(10).collect()
+}
+
+fn remember_secret_key(store: &dyn SecretKeyStore, sk: &SecretKey) -> (bool, Option<String>) {
+    match store.store(&sk.vault_id(), sk) {
+        Ok(()) => (true, None),
+        Err(error) => (false, Some(error.to_string())),
+    }
+}
+
+async fn refresh_touch_id_if_enabled(app: &AppHandle, path: &Path) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let (mut key_bytes, enabled) = {
+        let guard = require_unlocked(&state)?;
+        let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
+        (
+            unlocked.key.as_bytes().to_vec(),
+            unlocked.data.settings.biometrics_enabled,
+        )
+    };
+    if !enabled {
+        key_bytes.zeroize();
+        return Ok(());
+    }
+    let refresh = tokio::task::spawn_blocking(move || {
+        let result = platform::store_vault_key(&key_bytes);
+        key_bytes.zeroize();
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if refresh.is_err() {
+        platform::delete_vault_key();
+        let mut guard = require_unlocked(&state)?;
+        let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+        unlocked.data.settings.biometrics_enabled = false;
+        unlocked.data.settings.touch();
+        persist(app, path, unlocked)?;
+        remember_settings(&state, &unlocked.data.settings);
+    }
+    Ok(())
+}
+
 fn foreign_password(error: &VaultError) -> bool {
     matches!(
         error,
@@ -284,11 +381,153 @@ fn create_vault(app: AppHandle, state: State<AppState>, password: String) -> Res
 }
 
 #[tauri::command]
-fn unlock(app: AppHandle, state: State<AppState>, password: String) -> Result<(), String> {
+fn unlock(
+    app: AppHandle,
+    state: State<AppState>,
+    password: String,
+    secret_key: Option<String>,
+) -> Result<(), String> {
     let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let typed = secret_key
+        .filter(|value| !value.trim().is_empty())
+        .or_else(env_secret_key);
     let secret = SecretString::new(password);
-    let unlocked = vault::unlock_file(&path, &secret).map_err(err)?;
+    let unlocked = vault::unlock_file_with_secret_key(
+        &path,
+        &secret,
+        typed.as_deref(),
+        Some(store.as_ref()),
+    )
+    .map_err(err)?;
+    if let Some(sk) = unlocked.secret_key.as_ref() {
+        let _ = store.store(&sk.vault_id(), sk);
+    }
     accept_password_unlock(&app, &state, unlocked)
+}
+
+#[tauri::command]
+fn secret_key_status(app: AppHandle) -> Result<SecretKeyStatusView, String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    if !path.exists() {
+        return Ok(SecretKeyStatusView {
+            enabled: false,
+            stored: false,
+            required: false,
+        });
+    }
+    let (enabled, fingerprint) = vault::peek_secret_key_header(&path).map_err(err)?;
+    let stored = if enabled {
+        if env_secret_key().is_some() {
+            true
+        } else if let Some(fp) = fingerprint.as_deref() {
+            match securevault_core::secret_key::vault_id_from_fingerprint_b64(fp) {
+                Ok(id) => store.load(&id).ok().flatten().is_some(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    Ok(SecretKeyStatusView {
+        enabled,
+        stored,
+        required: enabled && !stored,
+    })
+}
+
+#[tauri::command]
+fn import_secret_key(app: AppHandle, secret_key: String) -> Result<SecretKeyStatusView, String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let (enabled, fingerprint) = vault::peek_secret_key_header(&path).map_err(err)?;
+    if !enabled {
+        return Err("이 금고는 Secret Key를 쓰지 않습니다.".into());
+    }
+    let sk = SecretKey::parse(&secret_key).map_err(err)?;
+    if Some(sk.fingerprint_b64()) != fingerprint {
+        return Err(err(VaultError::SecretKeyMismatch));
+    }
+    let _ = store.store(&sk.vault_id(), &sk);
+    secret_key_status(app)
+}
+
+#[tauri::command]
+async fn enable_secret_key(app: AppHandle, password: String) -> Result<EmergencyKitView, String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let secret = SecretString::new(password);
+    let sk = {
+        let state = app.state::<AppState>();
+        let device = device_id(&app)?;
+        let mut guard = require_unlocked(&state)?;
+        let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+        bind_device(unlocked, &device);
+        let sk = unlocked.enable_secret_key(&secret).map_err(err)?;
+        unlocked.dirty = true;
+        persist(&app, &path, unlocked)?;
+        sk
+    };
+    let (stored, store_error) = remember_secret_key(store.as_ref(), &sk);
+    refresh_touch_id_if_enabled(&app, &path).await?;
+    Ok(emergency_kit(&path, &sk, stored, store_error))
+}
+
+#[tauri::command]
+async fn disable_secret_key(
+    app: AppHandle,
+    password: String,
+    secret_key: String,
+) -> Result<(), String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let secret = SecretString::new(password);
+    let sk = SecretKey::parse(&secret_key).map_err(err)?;
+    let vault_id = sk.vault_id();
+    {
+        let state = app.state::<AppState>();
+        let device = device_id(&app)?;
+        let mut guard = require_unlocked(&state)?;
+        let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
+        bind_device(unlocked, &device);
+        unlocked.disable_secret_key(&secret, &sk).map_err(err)?;
+        unlocked.dirty = true;
+        persist(&app, &path, unlocked)?;
+    }
+    let _ = store.delete(&vault_id);
+    refresh_touch_id_if_enabled(&app, &path).await?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_secret_key(app: AppHandle, password: String) -> Result<EmergencyKitView, String> {
+    let path = vault_path(&app)?;
+    let store = sk_store(&app)?;
+    let secret = SecretString::new(password);
+    let state = app.state::<AppState>();
+    let guard = require_unlocked(&state)?;
+    let unlocked = guard.as_ref().ok_or_else(|| err(VaultError::Locked))?;
+    unlocked.verify_master_password(&secret).map_err(err)?;
+    let sk = if let Some(sk) = unlocked.secret_key.clone() {
+        sk
+    } else if let Some(fp) = unlocked.fingerprint_b64() {
+        let id = securevault_core::secret_key::vault_id_from_fingerprint_b64(&fp).map_err(err)?;
+        store
+            .load(&id)
+            .map_err(err)?
+            .ok_or_else(|| err(VaultError::SecretKeyRequired))?
+    } else {
+        return Err(err(VaultError::SecretKeyRequired));
+    };
+    if let Some(expected) = unlocked.fingerprint_b64() {
+        if sk.fingerprint_b64() != expected {
+            return Err(err(VaultError::SecretKeyMismatch));
+        }
+    }
+    Ok(emergency_kit(&path, &sk, true, None))
 }
 
 #[tauri::command]
@@ -604,6 +843,9 @@ async fn biometric_unlock(app: AppHandle) -> Result<(), String> {
     let path = vault_path(&app)?;
     let device = device_id(&app)?;
     let mut unlocked = unlock_file_with_key(&path, &key).map_err(err)?;
+    if let Ok(store) = sk_store(&app) {
+        vault::load_stored_secret_key(&mut unlocked, store.as_ref());
+    }
     if password_unlock_expired_now(&unlocked.data.settings) {
         return Err(err(VaultError::MasterPasswordRequired));
     }
@@ -859,6 +1101,11 @@ pub fn run() {
             open_existing_vault,
             create_vault,
             unlock,
+            secret_key_status,
+            import_secret_key,
+            enable_secret_key,
+            disable_secret_key,
+            reveal_secret_key,
             lock,
             is_unlocked,
             list_items,

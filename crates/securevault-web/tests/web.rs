@@ -1199,3 +1199,123 @@ fn data_dir_env_falls_back_to_legacy_name() {
         }
     }
 }
+
+fn secret_key_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::Mutex;
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+#[tokio::test]
+async fn secret_key_enable_unlock_and_env() {
+    let _guard = secret_key_env_lock();
+    std::env::remove_var("SECUREVAULT_SECRET_KEY");
+    std::env::remove_var("KEYHAVEN_SECRET_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _) = serve_for_test(Config::test(dir.path().to_path_buf())).await;
+    let mut jar = CookieJar::new();
+    let csrf = create_and_unlock(port, &mut jar).await;
+
+    let status = json_req(port, "GET", "/api/secret-key/status", Some(&mut jar), Some(&csrf), None).await;
+    assert_eq!(status.status, 200, "{}", String::from_utf8_lossy(&status.body));
+    assert_eq!(status.json()["enabled"], false);
+
+    let enabled = json_req(
+        port,
+        "POST",
+        "/api/secret-key/enable",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    assert_eq!(enabled.status, 200, "{}", String::from_utf8_lossy(&enabled.body));
+    let secret_key = enabled.json()["secretKey"].as_str().unwrap().to_string();
+    assert!(secret_key.starts_with("SV1-"));
+
+    let _ = json_req(port, "POST", "/api/lock", Some(&mut jar), Some(&csrf), Some(&json!({}))).await;
+    jar = CookieJar::new();
+    let _ = std::fs::remove_dir_all(dir.path().join("secret-key"));
+
+    let missing = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    assert_eq!(missing.status, 401);
+    assert_eq!(missing.json()["error"], "secret key required");
+
+    let unlocked = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER, "secretKey": secret_key })),
+    )
+    .await;
+    assert_eq!(unlocked.status, 200, "{}", String::from_utf8_lossy(&unlocked.body));
+    let csrf = unlocked.json()["csrfToken"].as_str().unwrap().to_string();
+
+    let disabled = json_req(
+        port,
+        "POST",
+        "/api/secret-key/disable",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER, "secretKey": secret_key })),
+    )
+    .await;
+    assert_eq!(disabled.status, 200, "{}", String::from_utf8_lossy(&disabled.body));
+}
+
+#[tokio::test]
+async fn secret_key_env_var_unlocks_without_body() {
+    let _guard = secret_key_env_lock();
+    let previous = std::env::var("SECUREVAULT_SECRET_KEY").ok();
+    let previous_legacy = std::env::var("KEYHAVEN_SECRET_KEY").ok();
+    std::env::remove_var("SECUREVAULT_SECRET_KEY");
+    std::env::remove_var("KEYHAVEN_SECRET_KEY");
+
+    let dir = tempfile::tempdir().unwrap();
+    let (port, _) = serve_for_test(Config::test(dir.path().to_path_buf())).await;
+    let mut jar = CookieJar::new();
+    let csrf = create_and_unlock(port, &mut jar).await;
+    let enabled = json_req(
+        port,
+        "POST",
+        "/api/secret-key/enable",
+        Some(&mut jar),
+        Some(&csrf),
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    assert_eq!(enabled.status, 200, "{}", String::from_utf8_lossy(&enabled.body));
+    let secret_key = enabled.json()["secretKey"].as_str().unwrap().to_string();
+    let _ = json_req(port, "POST", "/api/lock", Some(&mut jar), Some(&csrf), Some(&json!({}))).await;
+    let _ = std::fs::remove_dir_all(dir.path().join("secret-key"));
+    std::env::set_var("SECUREVAULT_SECRET_KEY", &secret_key);
+    let mut jar = CookieJar::new();
+    let unlocked = json_req(
+        port,
+        "POST",
+        "/api/unlock",
+        Some(&mut jar),
+        None,
+        Some(&json!({ "password": MASTER })),
+    )
+    .await;
+    match previous {
+        Some(value) => std::env::set_var("SECUREVAULT_SECRET_KEY", value),
+        None => std::env::remove_var("SECUREVAULT_SECRET_KEY"),
+    }
+    match previous_legacy {
+        Some(value) => std::env::set_var("KEYHAVEN_SECRET_KEY", value),
+        None => std::env::remove_var("KEYHAVEN_SECRET_KEY"),
+    }
+    assert_eq!(unlocked.status, 200, "{}", String::from_utf8_lossy(&unlocked.body));
+}

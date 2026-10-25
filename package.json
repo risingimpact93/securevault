@@ -1,7 +1,7 @@
 {
   "name": "securevault",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,11 +14,14 @@
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-clipboard-manager": "2.3.3",
     "@tauri-apps/plugin-dialog": "2.3.3",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.5.2",
