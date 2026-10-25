@@ -96,6 +96,13 @@ print(device["udid"])
 PY
 
 PREFS="iPhone 14 Pro Max|iPhone 15 Pro Max|iPhone 16 Pro Max|iPhone 16 Plus|iPhone 16 Pro|iPhone 15 Pro|iPhone 15 Plus|iPhone 15|iPhone 17 Pro Max|iPhone 17 Pro|iPhone 17 Plus|iPhone 17|iPhone 16|iPhone SE (3rd generation)"
+# Create an iPhone 14 Pro Max simulator (430x932 pt) on the newest iOS runtime if none exists.
+if ! xcrun simctl list devices available | grep -q "iPhone 14 Pro Max ("; then
+  RUNTIME=$(xcrun simctl list runtimes available -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("platform")=="iOS" or "iOS" in x.get("name","")]; r.sort(key=lambda x: [int(p) for p in x["version"].split(".")]); print(r[-1]["identifier"] if r else "")')
+  if [ -n "$RUNTIME" ]; then
+    xcrun simctl create "iPhone 14 Pro Max" com.apple.CoreSimulator.SimDeviceType.iPhone-14-Pro-Max "$RUNTIME" || echo "could not create iPhone 14 Pro Max on $RUNTIME"
+  fi
+fi
 UDID=$(PREFS="$PREFS" xcrun simctl list devices available -j | python3 "$PICK")
 echo "Booting $UDID"
 xcrun simctl boot "$UDID" || true
