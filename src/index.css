@@ -1356,3 +1356,54 @@ h3 {
     align-items: center;
   }
 }
+
+/* iPhone 14 Pro Max is 430×932 pt. Keep controls above the home indicator
+   and the Dynamic Island (viewport-fit=cover + safe-area insets). */
+@media (max-width: 480px) {
+  .auth-wrap {
+    padding: calc(16px + env(safe-area-inset-top)) 12px calc(20px + env(safe-area-inset-bottom));
+    align-items: stretch;
+  }
+
+  .auth-card {
+    width: 100%;
+    padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .auth-card .btn,
+  .detail .btn,
+  .card .btn,
+  .actions .btn,
+  .emergency-footer .btn,
+  .modal .btn {
+    width: 100%;
+  }
+
+  .actions,
+  .emergency-footer,
+  .detail-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topbar {
+    padding-top: calc(6px + env(safe-area-inset-top));
+    padding-left: calc(10px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+
+  .detail {
+    padding: 16px 12px calc(28px + env(safe-area-inset-bottom));
+  }
+
+  .sidebar {
+    padding-left: calc(8px + env(safe-area-inset-left));
+    padding-right: calc(8px + env(safe-area-inset-right));
+  }
+
+  .toasts {
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+}

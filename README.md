@@ -212,7 +212,8 @@ iPhone/iPad 팁:
 `.github/workflows/build.yml`은 푸시와 수동 실행(workflow_dispatch)에서 돌아요.
 
 - **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `securevault-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
-- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `securevault-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.3.2_aarch64.dmg`입니다.
+- **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `securevault-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.4.0_aarch64.dmg`입니다.
+- **ios-app** (macos-15): 같은 React UI를 Tauri iOS 타깃으로 시뮬레이터에 빌드해요. 식별자는 `com.securevault.ios`이고 Mac 앱(`com.securevault.app`)과 키체인·컨테이너가 겹치지 않습니다. `src-tauri/gen/apple`은 커밋하지 않고 러너에서 `tauri ios init`으로 만들어요. 서명 없는 시뮬레이터 `.app`, 실행 화면 스크린샷, 그리고 실패해도 잡을 막지 않는 서명 없는 `.ipa`를 artifact로 올려요. TestFlight와 App Store 업로드는 하지 않습니다.
 
 ### 서명 켜는 법
 저장소 Settings → Secrets and variables → Actions에 `APPLE_CERTIFICATE`(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`(앱 전용 암호), `APPLE_TEAM_ID`를 넣으면 다음 실행부터 서명·공증 단계가 자동으로 켜져요.

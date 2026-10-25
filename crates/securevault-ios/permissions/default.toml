@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Document picker is invoked from the Rust app, not the webview."
+permissions = []

@@ -1,6 +1,6 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { importSecretKey, mapError } from "../api";
+import { clientPlatform, importSecretKey, looksLikeIos, mapError, scanSecretKeyQr } from "../api";
 import BuildStamp from "./BuildStamp";
 import Logo from "./Logo";
 
@@ -26,7 +26,18 @@ export default function SecretKeyScreen({
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ios, setIos] = useState(looksLikeIos);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void clientPlatform().then((platform) => {
+      if (!cancelled) setIos(platform === "ios");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function submitKey(secretKey: string) {
     setBusy(true);
@@ -105,6 +116,29 @@ export default function SecretKeyScreen({
         <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: "100%" }}>
           {busy ? "확인 중…" : "Secret Key 확인"}
         </button>
+        {ios ? (
+          <button
+            className="btn"
+            type="button"
+            disabled={busy}
+            style={{ width: "100%" }}
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              void scanSecretKeyQr()
+                .then(async (decoded) => {
+                  setValue(decoded);
+                  await submitKey(decoded);
+                })
+                .catch((err: unknown) => {
+                  setError(mapError(err instanceof Error ? err.message : String(err)));
+                  setBusy(false);
+                });
+            }}
+          >
+            카메라로 QR 스캔
+          </button>
+        ) : null}
         <button
           className="btn"
           type="button"

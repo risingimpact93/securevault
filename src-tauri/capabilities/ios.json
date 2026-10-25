@@ -1,0 +1,7 @@
+{
+  "identifier": "ios-barcode",
+  "description": "Camera QR scan on iOS. Omitted from the Mac capability so the DMG build does not require the scanner at runtime.",
+  "platforms": ["iOS"],
+  "windows": ["main"],
+  "permissions": ["barcode-scanner:default"]
+}

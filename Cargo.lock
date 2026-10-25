@@ -3942,8 +3942,9 @@ dependencies = [
 
 [[package]]
 name = "securevault"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
+ "base64 0.22.1",
  "block2",
  "bytes",
  "http",
@@ -3956,6 +3957,7 @@ dependencies = [
  "plist",
  "secrecy",
  "securevault-core",
+ "securevault-ios",
  "security-framework",
  "serde",
  "serde_json",
@@ -3965,6 +3967,7 @@ dependencies = [
  "tauri-codegen",
  "tauri-macros",
  "tauri-plugin",
+ "tauri-plugin-barcode-scanner",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
@@ -3985,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3998,6 +4001,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
+ "objc2",
+ "objc2-foundation",
  "pdf-writer",
  "png 0.17.16",
  "qrcode",
@@ -4015,8 +4021,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "securevault-ios"
+version = "0.4.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "securevault-web"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4782,6 +4798,20 @@ dependencies = [
  "tauri-utils",
  "toml 0.9.12+spec-1.1.0",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-barcode-scanner"
+version = "2.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25db1d805e23be00aa45471d677acc4d9825815feebfaac043d8b4da82971e99"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

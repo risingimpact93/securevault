@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SecureVault",
+  "version": "0.4.0",
+  "identifier": "com.securevault.ios",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SecureVault",
+        "width": 430,
+        "height": 932,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "15.0",
+      "infoPlist": "Info.ios.plist"
+    }
+  }
+}

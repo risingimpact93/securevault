@@ -63,8 +63,10 @@ function installTauriMock(device: DeviceManagerStatus): void {
           return { enabled: false, port: 47821, tokens: [] };
         case "mcp_access_log":
           return [];
+        case "client_platform":
+          return "macos";
         case "app_build":
-          return { version: "0.3.2", commit: "dev" };
+          return { version: "0.4.0", commit: "dev" };
         case "copy_to_clipboard":
           return null;
         default:

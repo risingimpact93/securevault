@@ -103,7 +103,7 @@ export interface BiometricStatus {
   canUnlock: boolean;
   passwordRequired: boolean;
   reason?: "restart" | "interval";
-  platform: "web" | "macos" | "unsupported";
+  platform: "web" | "macos" | "ios" | "unsupported";
   touchIdReregister?: boolean;
 }
 

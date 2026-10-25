@@ -28,6 +28,48 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+export type ClientPlatform = "web" | "macos" | "ios" | "unsupported";
+
+export function looksLikeIos(): boolean {
+  return typeof navigator !== "undefined" && /iPhone|iPad|iPod/.test(navigator.userAgent);
+}
+
+let cachedPlatform: ClientPlatform | null = null;
+
+export async function clientPlatform(): Promise<ClientPlatform> {
+  if (!isTauri()) return "web";
+  if (cachedPlatform) return cachedPlatform;
+  try {
+    const value = await invoke<ClientPlatform>("client_platform");
+    if (value === "web" || value === "macos" || value === "ios" || value === "unsupported") {
+      cachedPlatform = value;
+      return value;
+    }
+  } catch {
+    /* fall through */
+  }
+  return looksLikeIos() ? "ios" : "unsupported";
+}
+
+export async function scanSecretKeyQr(): Promise<string> {
+  const scanner = await import("@tauri-apps/plugin-barcode-scanner");
+  let permission = await scanner.checkPermissions();
+  if (permission !== "granted") {
+    permission = await scanner.requestPermissions();
+  }
+  if (permission !== "granted") {
+    throw new Error("카메라 권한이 없습니다. QR 이미지를 가져오세요.");
+  }
+  const scanned = await scanner.scan({
+    formats: [scanner.Format.QRCode],
+    cameraDirection: "back",
+  });
+  if (!scanned.content.trim()) {
+    throw new Error("QR 코드에서 Secret Key를 읽지 못했습니다.");
+  }
+  return scanned.content;
+}
+
 let csrfToken: string | null = null;
 let pendingImportFile: File | null = null;
 
@@ -777,6 +819,14 @@ export async function mergeSyncPassword(path: string, password: string): Promise
 
 export async function pickVaultFile(mode: VaultLocationMode): Promise<string | null> {
   if (!isTauri()) return null;
+  if (mode !== "move" && (await clientPlatform()) === "ios") {
+    try {
+      const picked = await invoke<string | null>("pick_ios_vault");
+      return picked;
+    } catch {
+      /* The open-mode picker failed. A cancel returns null and does not land here. */
+    }
+  }
   if (mode === "move") {
     const selected = await save({
       title: "금고 파일 위치",
@@ -793,8 +843,12 @@ export async function pickVaultFile(mode: VaultLocationMode): Promise<string | n
       { name: "iCloud placeholder", extensions: ["icloud"] },
     ],
   });
-  if (Array.isArray(selected)) return selected[0] ?? null;
-  return selected;
+  const picked = Array.isArray(selected) ? (selected[0] ?? null) : selected;
+  if (!picked) return null;
+  if ((await clientPlatform()) === "ios") {
+    return invoke<string>("adopt_ios_vault_path", { path: picked });
+  }
+  return picked;
 }
 
 export async function pickSavePath(): Promise<string | null> {

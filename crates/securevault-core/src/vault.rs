@@ -704,12 +704,22 @@ pub fn merge_unknown_fields(
     }
 }
 
-/// macOS ComputerName, then `hostname`. Empty results are skipped.
+/// macOS ComputerName, then the iOS device name, then `hostname`.
+/// Empty results are skipped.
 pub fn local_device_name() -> String {
+    #[cfg(target_os = "macos")]
     if let Some(name) = command_stdout("scutil", &["--get", "ComputerName"]) {
         return name;
     }
+    #[cfg(target_os = "ios")]
+    if let Some(name) = crate::ios_device::device_name() {
+        return name;
+    }
     if let Some(name) = command_stdout("hostname", &[]) {
+        return name;
+    }
+    #[cfg(target_os = "ios")]
+    if let Some(name) = crate::ios_device::host_name() {
         return name;
     }
     "이 기기".to_string()
@@ -943,9 +953,20 @@ impl UnlockedVault {
         Ok(())
     }
 
+    /// Enable the Secret Key and claim the manager role when this install has a device id.
     pub fn enable_secret_key(
         &mut self,
         password: &SecretString,
+    ) -> Result<crate::secret_key::SecretKey, VaultError> {
+        self.enable_secret_key_claiming(password, true)
+    }
+
+    /// Enable the Secret Key. `claim_manager` is false on iPhone so the phone
+    /// stays a non-manager until the user takes over with the password and Secret Key.
+    pub fn enable_secret_key_claiming(
+        &mut self,
+        password: &SecretString,
+        claim_manager: bool,
     ) -> Result<crate::secret_key::SecretKey, VaultError> {
         self.ensure_secret_key_change()?;
         if self.sk_enabled() {
@@ -961,7 +982,9 @@ impl UnlockedVault {
             if self.data.device_record(&device_id).is_none() {
                 register_device(&mut self.data, &device_id, &local_device_name());
             }
-            self.assign_manager(&device_id);
+            if claim_manager {
+                self.assign_manager(&device_id);
+            }
         }
         Ok(sk)
     }

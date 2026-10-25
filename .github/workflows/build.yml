@@ -52,9 +52,71 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           args: --target aarch64-apple-darwin --bundles app,dmg
-      # productName sets the DMG filename (SecureVault_0.2.1_aarch64.dmg). The glob tracks it.
+      # productName sets the DMG filename (SecureVault_0.4.0_aarch64.dmg). The glob tracks it.
       - uses: actions/upload-artifact@v4
         with:
           name: securevault-macos-arm64-dmg
           path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+  ios-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      # iOS targets may need the current stable rustc. Host checks stay on 1.85-compatible source.
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-apple-ios,aarch64-apple-ios-sim }
+      - uses: swatinem/rust-cache@v2
+      - name: Apple CLI tools
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen || true; fi
+          if ! command -v pod >/dev/null 2>&1; then brew install cocoapods || true; fi
+      - run: npm ci
+      - name: Simulator app and screenshots
+        run: sh scripts/ios-simulator.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securevault-ios-screenshots
+          path: src-tauri/gen/apple/ci-out/screenshots/*.png
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securevault-ios-simulator-app
+          path: src-tauri/gen/apple/ci-out/SecureVault-simulator-app.zip
+          if-no-files-found: error
+      - name: Unsigned device archive
+        continue-on-error: true
+        run: |
+          set -eu
+          PROJ=$(find src-tauri/gen/apple -name '*.xcodeproj' -print | head -n 1)
+          SCHEME_FILE=$(find src-tauri/gen/apple -name '*.xcscheme' -print | head -n 1)
+          SCHEME=$(basename "$SCHEME_FILE" .xcscheme)
+          ARCHIVE="$RUNNER_TEMP/SecureVault.xcarchive"
+          xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$ARCHIVE" \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            archive
+          APP=$(find "$ARCHIVE" -name 'SecureVault.app' -type d | head -n 1)
+          STAGE="$RUNNER_TEMP/ipa"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP" "$STAGE/Payload/"
+          mkdir -p src-tauri/gen/apple/ci-out
+          (cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/src-tauri/gen/apple/ci-out/SecureVault-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: securevault-ios-unsigned-ipa
+          path: src-tauri/gen/apple/ci-out/SecureVault-unsigned.ipa
+          if-no-files-found: warn

@@ -1,0 +1,19 @@
+[package]
+name = "securevault-ios"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "iOS document picker and security-scoped bookmark plugin for SecureVault"
+license = "MIT"
+links = "securevault-ios"
+
+[build-dependencies]
+tauri-plugin = { version = "=2.4.0", features = ["build"] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "=2.11.5", features = [] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { version = "=2.11.5", features = ["wry"] }

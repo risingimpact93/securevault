@@ -5,6 +5,8 @@ import {
   biometricEnable,
   biometricStatus,
   changeMasterPassword,
+  clientPlatform,
+  looksLikeIos,
   copyToClipboard,
   deleteItem,
   designateManager,
@@ -990,6 +992,17 @@ export function SettingsPanel({
   const [claimPassword, setClaimPassword] = useState("");
   const [claimKey, setClaimKey] = useState("");
   const [handoverId, setHandoverId] = useState("");
+  const [ios, setIos] = useState(looksLikeIos);
+
+  useEffect(() => {
+    let cancelled = false;
+    void clientPlatform().then((platform) => {
+      if (!cancelled) setIos(platform === "ios");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setIntervalDays(String(settings.passwordIntervalDays));
@@ -1390,14 +1403,16 @@ export function SettingsPanel({
             ))}
           </select>
         </label>
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.lockOnScreenLock}
-            onChange={(e) => void savePatch({ lockOnScreenLock: e.target.checked })}
-          />
-          <span>화면 잠금이나 절전으로 들어가면 즉시 잠금 (macOS 앱에서 동작)</span>
-        </label>
+        {ios ? null : (
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.lockOnScreenLock}
+              onChange={(e) => void savePatch({ lockOnScreenLock: e.target.checked })}
+            />
+            <span>화면 잠금이나 절전으로 들어가면 즉시 잠금 (macOS 앱에서 동작)</span>
+          </label>
+        )}
         <label className="field">
           <span>마스터 비밀번호를 다시 요구하는 주기(일)</span>
           <input
@@ -1417,6 +1432,7 @@ export function SettingsPanel({
           />
         </label>
       </div>
+      {ios ? null : (
       <div className="card">
         <h3>생체 인증</h3>
         <p className="lede">
@@ -1453,6 +1469,7 @@ export function SettingsPanel({
           <p className="lede">이 환경에서는 생체 인증을 사용할 수 없습니다. Linux에서는 꺼진 상태로 둡니다.</p>
         ) : null}
       </div>
+      )}
       <div className="card secret-key-card">
         <h3>Secret Key</h3>
         <p className="lede">
@@ -1591,7 +1608,7 @@ export function SettingsPanel({
           파일에서 가져오기
         </button>
       </form>
-      <McpSettings onToast={onToast} />
+      {ios ? null : <McpSettings onToast={onToast} />}
       <BuildStamp />
     </div>
   );

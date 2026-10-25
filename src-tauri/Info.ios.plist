@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>SecureVault이 Secret Key QR 코드를 카메라로 읽습니다. 촬영한 이미지는 금고 밖에 저장하지 않습니다.</string>
+  <key>NSFaceIDUsageDescription</key>
+  <string>이 iOS 빌드는 Face ID로 금고를 열지 않습니다.</string>
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
+  <key>UISupportsDocumentBrowser</key>
+  <true/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>SecureVault Vault</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.securevault.khv</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.securevault.khv</string>
+      <key>UTTypeDescription</key>
+      <string>SecureVault vault</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>khv</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -8,6 +8,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GIT_COMMIT: &str = env!("SECUREVAULT_GIT_HASH");
 
 pub mod emergency_kit;
+pub mod ios_path;
 pub mod mcp;
 pub mod migrate;
 pub mod order;
@@ -15,6 +16,9 @@ pub mod secret_key;
 pub mod secret_key_store;
 pub mod sync;
 pub mod vault;
+
+#[cfg(target_os = "ios")]
+mod ios_device;
 
 /// Read `SECUREVAULT_{suffix}`. When that variable is missing or blank, read
 /// `KEYHAVEN_{suffix}`.

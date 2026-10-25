@@ -1,3 +1,6 @@
+mod ios_access;
+#[cfg(target_os = "ios")]
+mod ios_bookmark;
 mod mcp_host;
 mod platform;
 
@@ -12,7 +15,7 @@ use securevault_core::secret_key_store::{local_secret_key_store, SecretKeyStore}
 use securevault_core::sync::{self, ConflictView, SyncStatus};
 use securevault_core::vault::{
     self, generate_password as vault_generate_password, import_bytes, mark_password_unlock, new_id,
-    now_rfc3339, password_unlock_expired_now, persist_unlocked, unlock_file_with_key, validate_item_type,
+    now_rfc3339, password_unlock_expired_now, unlock_file_with_key, validate_item_type,
     SettingsPatch, UnlockedVault, VaultError, VaultItem, VaultKey, VaultSettings,
 };
 use secrecy::SecretString;
@@ -141,7 +144,7 @@ fn biometric_view(state: &AppState, touch_id_reregister: bool) -> BiometricStatu
         can_unlock: available && configured && !password_required,
         password_required,
         reason,
-        platform: if available { "macos" } else { "unsupported" },
+        platform: client_platform(),
         touch_id_reregister,
     }
 }
@@ -197,7 +200,15 @@ fn remember_vault_path(app: &AppHandle, path: PathBuf) -> Result<(), String> {
 
 fn persist(app: &AppHandle, path: &Path, unlocked: &mut UnlockedVault) -> Result<(), String> {
     prepare_sync(app, unlocked)?;
-    persist_unlocked(path, unlocked).map_err(err)?;
+    // iOS and desktop share persist_unlocked. The iOS name is what the compat test calls.
+    #[cfg(target_os = "ios")]
+    {
+        securevault_core::ios_path::resave_ios_vault(path, unlocked).map_err(err)?;
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        vault::persist_unlocked(path, unlocked).map_err(err)?;
+    }
     app.state::<AppState>().generation.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -396,6 +407,21 @@ fn unlock(
         .filter(|value| !value.trim().is_empty())
         .or_else(env_secret_key);
     let secret = SecretString::new(password);
+    #[cfg(target_os = "ios")]
+    let unlocked = {
+        let device = device_id(&app)?;
+        let name = vault::local_device_name();
+        securevault_core::ios_path::open_ios_vault(
+            &path,
+            &secret,
+            typed.as_deref(),
+            Some(store.as_ref()),
+            &device,
+            &name,
+        )
+        .map_err(err)?
+    };
+    #[cfg(not(target_os = "ios"))]
     let unlocked = vault::unlock_file_with_secret_key(
         &path,
         &secret,
@@ -469,6 +495,10 @@ async fn enable_secret_key(app: AppHandle, password: String) -> Result<Emergency
         let mut guard = require_unlocked(&state)?;
         let unlocked = guard.as_mut().ok_or_else(|| err(VaultError::Locked))?;
         bind_device(unlocked, &device);
+        // iPhone must not become the manager just by turning the Secret Key on.
+        #[cfg(target_os = "ios")]
+        let sk = unlocked.enable_secret_key_claiming(&secret, false).map_err(err)?;
+        #[cfg(not(target_os = "ios"))]
         let sk = unlocked.enable_secret_key(&secret).map_err(err)?;
         unlocked.dirty = true;
         persist(&app, &path, unlocked)?;
@@ -647,6 +677,93 @@ fn list_items(state: State<AppState>) -> Result<Vec<VaultItem>, String> {
 struct AppBuild {
     version: String,
     commit: String,
+}
+
+#[tauri::command]
+fn client_platform() -> &'static str {
+    #[cfg(target_os = "ios")]
+    {
+        "ios"
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        if platform::biometrics_available() {
+            "macos"
+        } else {
+            "unsupported"
+        }
+    }
+}
+
+fn store_picked_vault(app: &AppHandle, path: &Path, bookmark: &str) -> Result<String, String> {
+    let local = ensure_local(app)?;
+    let record_path;
+    let record_bookmark;
+    if !bookmark.trim().is_empty() {
+        #[cfg(target_os = "ios")]
+        {
+            let _ = ios_bookmark::resolve_bookmark(bookmark);
+        }
+        record_path = path.display().to_string();
+        record_bookmark = bookmark.to_string();
+        remember_vault_path(app, path.to_path_buf())?;
+    } else {
+        let copied = ios_access::copy_into_app_dir(&local.data_dir, path)?;
+        record_path = copied.display().to_string();
+        record_bookmark = String::new();
+        remember_vault_path(app, copied)?;
+    }
+    ios_access::save_record(
+        &local.data_dir,
+        &ios_access::VaultAccessRecord {
+            path: record_path.clone(),
+            bookmark: record_bookmark,
+        },
+    )?;
+    Ok(record_path)
+}
+
+#[tauri::command]
+fn pick_ios_vault(app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = app;
+        return Err("iOS에서만 문서를 고를 수 있습니다.".into());
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let picked = securevault_ios::pick(&app)?;
+        if picked.cancelled || picked.path.trim().is_empty() {
+            return Ok(None);
+        }
+        let path = PathBuf::from(&picked.path);
+        if picked.copied {
+            let local = ensure_local(&app)?;
+            ios_access::save_record(
+                &local.data_dir,
+                &ios_access::VaultAccessRecord {
+                    path: picked.path.clone(),
+                    bookmark: String::new(),
+                },
+            )?;
+            remember_vault_path(&app, path)?;
+            return Ok(Some(picked.path));
+        }
+        Ok(Some(store_picked_vault(&app, &path, &picked.bookmark)?))
+    }
+}
+
+#[tauri::command]
+fn adopt_ios_vault_path(app: AppHandle, path: String) -> Result<String, String> {
+    let source = PathBuf::from(&path);
+    if path.trim().is_empty() || !source.is_file() {
+        return Err("금고 파일을 찾지 못했습니다.".into());
+    }
+    #[cfg(target_os = "ios")]
+    if let Some(bookmark) = ios_bookmark::create_bookmark(&source) {
+        return store_picked_vault(&app, &source, &bookmark);
+    }
+    store_picked_vault(&app, &source, "")
 }
 
 #[tauri::command]
@@ -1280,7 +1397,12 @@ fn reveal_saved_file(path: String) -> Result<(), String> {
             "파일 위치에서 보여주지 못했습니다.",
         );
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "ios")]
+    {
+        let _ = path;
+        return Err("iOS에서는 파일 앱에서 직접 여세요.".into());
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "ios")))]
     {
         let parent = Path::new(&path)
             .parent()
@@ -1312,7 +1434,12 @@ fn open_saved_file_preview(path: String) -> Result<(), String> {
     {
         return spawn_checked("cmd", &["/C", "start", "", &path], "파일을 열지 못했습니다.");
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "ios")]
+    {
+        let _ = path;
+        return Err("iOS에서는 미리보기를 열 수 없습니다. PDF로 저장한 뒤 파일 앱에서 여세요.".into());
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "ios")))]
     {
         spawn_checked("xdg-open", &[&path], "파일을 열지 못했습니다.")
     }
@@ -1345,12 +1472,81 @@ fn copy_to_clipboard(app: AppHandle, text: String, clear_after_secs: u64) -> Res
     Ok(())
 }
 
+fn restore_bookmarked_vault(app: &AppHandle) {
+    let Ok(local) = ensure_local(app) else {
+        return;
+    };
+    if let Some(path) = ios_access::restore(&local.data_dir) {
+        let _ = remember_vault_path(app, path);
+    }
+}
+
+fn demo_requested() -> bool {
+    matches!(
+        securevault_core::env_var("DEMO").as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+fn prepare_demo(app: &AppHandle) {
+    if !demo_requested() {
+        return;
+    }
+    if let Err(err) = prepare_demo_inner(app) {
+        eprintln!("securevault demo: {err}");
+    }
+}
+
+fn prepare_demo_inner(app: &AppHandle) -> Result<(), String> {
+    let local = ensure_local(app)?;
+    let path = local.data_dir.join("demo-vault.khv");
+    remember_vault_path(app, path.clone())?;
+    let password = SecretString::new("demo-password".to_string());
+    let mut unlocked = if path.is_file() {
+        vault::unlock_file(&path, &password).map_err(err)?
+    } else {
+        vault::create_vault_at(&path, &password).map_err(err)?
+    };
+    if unlocked.data.items.is_empty() {
+        let mut login = VaultItem::skeleton();
+        login.item_type = "login".to_string();
+        login.title = "예시 메일".to_string();
+        login.username = Some("ada@example.invalid".to_string());
+        login.password = Some("dummy-not-secret".to_string());
+        login.url = Some("https://example.invalid".to_string());
+        login.notes = Some("더미 데이터".to_string());
+        let mut card = VaultItem::skeleton();
+        card.item_type = "card".to_string();
+        card.title = "예시 카드".to_string();
+        card.cardholder = Some("DUMMY USER".to_string());
+        card.number = Some("0000 0000 0000 0000".to_string());
+        card.expiry = Some("01/30".to_string());
+        card.cvv = Some("000".to_string());
+        card.notes = Some("더미 데이터".to_string());
+        let mut note = VaultItem::skeleton();
+        note.item_type = "note".to_string();
+        note.title = "예시 메모".to_string();
+        note.notes = Some("더미 데이터. 실제 비밀이 아닙니다.".to_string());
+        for item in [login, card, note] {
+            sync::insert_new(&mut unlocked.data, item, &local.device_id);
+        }
+    }
+    unlocked.data.settings.auto_lock_minutes = 60;
+    unlocked.dirty = true;
+    let state = app.state::<AppState>();
+    accept_password_unlock(app, &state, unlocked)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(securevault_ios::init());
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    builder
         .manage(AppState {
             unlocked: Arc::new(Mutex::new(None)),
             mcp: Mutex::new(None),
@@ -1394,6 +1590,9 @@ pub fn run() {
             save_secret_key_qr,
             reveal_saved_file,
             open_saved_file_preview,
+            client_platform,
+            pick_ios_vault,
+            adopt_ios_vault_path,
             get_vault_settings,
             update_vault_settings,
             screen_lock_supported,
@@ -1420,12 +1619,16 @@ pub fn run() {
                     eprintln!("securevault migration: {err}");
                 }
             }
+            restore_bookmarked_vault(app.handle());
+            prepare_demo(app.handle());
             platform::start_screen_lock_watcher(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(sync::SYNC_POLL_SECS));
                 poll_desktop(&handle);
             });
+            // The loopback MCP host is a desktop feature. iOS has no local server.
+            #[cfg(not(target_os = "ios"))]
             if let Err(err) = mcp_host::install(app.handle()) {
                 eprintln!("securevault mcp: {err}");
             }

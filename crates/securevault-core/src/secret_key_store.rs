@@ -1,9 +1,10 @@
 //! Local Secret Key storage.
 //!
 //! macOS uses the login keychain (generic password, not iCloud-synced, no
-//! access group so unsigned builds work). Other platforms and tests use a
-//! file or in-memory store. A future iCloud-synced impl implements the same
-//! trait; 0.3.0 never writes the Secret Key next to `vault.khv`.
+//! access group so unsigned builds work). iOS uses the data-protection
+//! keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and
+//! synchronizable false. Other platforms and tests use a file or in-memory
+//! store. The Secret Key is never written next to `vault.khv`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -21,18 +22,18 @@ pub trait SecretKeyStore: Send + Sync {
     fn delete(&self, vault_id: &str) -> Result<(), VaultError>;
 }
 
-/// Login-keychain store. Compiled on every OS so the seam exists; the
-/// Security-framework body runs only on macOS.
+/// Keychain store. Compiled on every OS so the seam exists; the
+/// Security-framework body runs on macOS and iOS.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KeychainSecretKeyStore;
 
 impl SecretKeyStore for KeychainSecretKeyStore {
     fn load(&self, vault_id: &str) -> Result<Option<SecretKey>, VaultError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            macos::load(vault_id)
+            apple::load(vault_id)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             let _ = vault_id;
             Err(VaultError::SecretKeyStoreUnavailable)
@@ -40,11 +41,11 @@ impl SecretKeyStore for KeychainSecretKeyStore {
     }
 
     fn store(&self, vault_id: &str, key: &SecretKey) -> Result<(), VaultError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            macos::store(vault_id, key)
+            apple::store(vault_id, key)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             let _ = (vault_id, key);
             Err(VaultError::SecretKeyStoreUnavailable)
@@ -52,11 +53,11 @@ impl SecretKeyStore for KeychainSecretKeyStore {
     }
 
     fn delete(&self, vault_id: &str) -> Result<(), VaultError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            macos::delete(vault_id)
+            apple::delete(vault_id)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             let _ = vault_id;
             Ok(())
@@ -165,14 +166,14 @@ impl SecretKeyStore for IcloudSecretKeyStore {
     }
 }
 
-/// macOS: login keychain. Elsewhere: a file under `data_dir/secret-key`.
+/// macOS and iOS: keychain. Elsewhere: a file under `data_dir/secret-key`.
 pub fn local_secret_key_store(data_dir: &Path) -> Box<dyn SecretKeyStore> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         let _ = data_dir;
         Box::new(KeychainSecretKeyStore)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         Box::new(FileSecretKeyStore::new(data_dir.join("secret-key")))
     }
@@ -184,8 +185,8 @@ fn valid_vault_id(vault_id: &str) -> bool {
         && vault_id.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple {
     use security_framework::passwords::{
         delete_generic_password_options, generic_password, set_generic_password_options,
         PasswordOptions,
@@ -194,16 +195,31 @@ mod macos {
     use super::{SecretKey, KEYCHAIN_SERVICE};
     use crate::vault::VaultError;
 
-    fn options(vault_id: &str) -> PasswordOptions {
+    fn options(vault_id: &str) -> Result<PasswordOptions, VaultError> {
         let mut opts = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, vault_id);
-        // kSecAttrSynchronizable = false. No access group / data-protection
-        // keychain, so unsigned macOS builds can still store the Secret Key.
-        opts.set_access_synchronized(Some(false));
-        opts
+        #[cfg(target_os = "macos")]
+        {
+            // kSecAttrSynchronizable = false. No access group, so unsigned
+            // macOS builds can still store the Secret Key.
+            opts.set_access_synchronized(Some(false));
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use security_framework::access_control::{ProtectionMode, SecAccessControl};
+            // This-device-only. Not the iCloud keychain (synchronizable = false).
+            let access = SecAccessControl::create_with_protection(
+                Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+                0,
+            )
+            .map_err(|_| VaultError::SecretKeyStoreUnavailable)?;
+            opts.set_access_control(access);
+            opts.set_access_synchronized(Some(false));
+        }
+        Ok(opts)
     }
 
     pub fn load(vault_id: &str) -> Result<Option<SecretKey>, VaultError> {
-        match generic_password(options(vault_id)) {
+        match generic_password(options(vault_id)?) {
             Ok(bytes) => {
                 let text = String::from_utf8(bytes).map_err(|_| VaultError::InvalidSecretKey)?;
                 Ok(Some(SecretKey::parse(&text)?))
@@ -215,12 +231,12 @@ mod macos {
 
     pub fn store(vault_id: &str, key: &SecretKey) -> Result<(), VaultError> {
         let displayed = key.format_display();
-        set_generic_password_options(displayed.as_bytes(), options(vault_id))
+        set_generic_password_options(displayed.as_bytes(), options(vault_id)?)
             .map_err(|_| VaultError::SecretKeyStoreUnavailable)
     }
 
     pub fn delete(vault_id: &str) -> Result<(), VaultError> {
-        match delete_generic_password_options(options(vault_id)) {
+        match delete_generic_password_options(options(vault_id)?) {
             Ok(()) => Ok(()),
             Err(err) if err.code() == -25300 => Ok(()),
             Err(_) => Err(VaultError::SecretKeyStoreUnavailable),
@@ -289,7 +305,7 @@ mod tests {
     fn local_store_is_file_off_macos() {
         let dir = tempfile::tempdir().unwrap();
         let store = local_secret_key_store(dir.path());
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
             let sk = SecretKey::generate();
             let result = store.store(&sk.vault_id(), &sk);
             assert!(result.is_ok() || matches!(result, Err(VaultError::SecretKeyStoreUnavailable)));
