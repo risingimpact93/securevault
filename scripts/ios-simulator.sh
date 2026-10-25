@@ -103,7 +103,7 @@ if ! xcrun simctl list devices available | grep -q "iPhone 14 Pro Max ("; then
     xcrun simctl create "iPhone 14 Pro Max" com.apple.CoreSimulator.SimDeviceType.iPhone-14-Pro-Max "$RUNTIME" || echo "could not create iPhone 14 Pro Max on $RUNTIME"
   fi
 fi
-UDID=$(PREFS="$PREFS" xcrun simctl list devices available -j | python3 "$PICK")
+UDID=$(xcrun simctl list devices available -j | PREFS="$PREFS" python3 "$PICK")
 echo "Booting $UDID"
 xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
