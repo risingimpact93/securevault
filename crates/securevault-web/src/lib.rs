@@ -44,6 +44,8 @@ pub struct Config {
     pub use_vault_idle: bool,
     pub approval_timeout: Duration,
     pub mcp_enabled: bool,
+    /// Store Secret Keys as files under data_dir instead of the OS keychain (tests).
+    pub file_secret_key_store: bool,
 }
 
 impl Config {
@@ -58,6 +60,7 @@ impl Config {
             use_vault_idle: true,
             approval_timeout: Duration::from_secs(approval::DEFAULT_APPROVAL_TIMEOUT_SECS),
             mcp_enabled: false,
+            file_secret_key_store: true,
         }
     }
 }
@@ -148,7 +151,11 @@ impl AppState {
         if config.mcp_enabled {
             let _ = mcp.set_listen(true, if config.port == 0 { DEFAULT_PORT } else { config.port });
         }
-        let sk_store = local_secret_key_store(&config.data_dir);
+        let sk_store: Box<dyn SecretKeyStore> = if config.file_secret_key_store {
+            Box::new(securevault_core::secret_key_store::FileSecretKeyStore::new(config.data_dir.join("secret-key")))
+        } else {
+            local_secret_key_store(&config.data_dir)
+        };
         let state = Self {
             inner: Arc::new(Inner {
                 vault_path: Mutex::new(vault_path),

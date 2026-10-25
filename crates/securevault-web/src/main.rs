@@ -98,6 +98,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         use_vault_idle: true,
         approval_timeout: Duration::from_secs(60),
         mcp_enabled: false,
+        file_secret_key_store: false,
     })
 }
 
