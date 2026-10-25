@@ -45,6 +45,9 @@ plist = "=1.7.1"
 url = "=2.5.4"
 idna = "=1.0.3"
 idna_adapter = "=1.2.0"
+
+# Desktop-only version pins (pulling these on iOS compiles wayland and breaks the build).
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 wayland-protocols = "=0.32.5"
 zbus = "=5.5.0"
 zbus_names = "=4.2.0"
