@@ -1,13 +1,13 @@
 //! Public Suffix List lookup (registrable domain / eTLD+1).
 //!
-//! The list is vendored at build time (`data/public_suffix_list.dat`) so the
+//! The list is vendored at build time (`assets/public_suffix_list.dat`) so the
 //! app never fetches it at runtime. Both ICANN and PRIVATE sections are used,
 //! so `alice.github.io` and `bob.github.io` are different sites.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-const PSL_DAT: &str = include_str!("../data/public_suffix_list.dat");
+const PSL_DAT: &str = include_str!("../assets/public_suffix_list.dat");
 
 struct Rules {
     normal: HashSet<String>,
