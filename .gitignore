@@ -19,3 +19,5 @@ data/
 *.rej
 *.orig
 dist-extension
+extension/safari/Extension/Resources
+extension/safari/*.xcodeproj

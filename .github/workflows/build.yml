@@ -61,6 +61,15 @@ jobs:
           name: securevault-macos-arm64-dmg
           path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
+      - name: Safari extension app (ad-hoc signed, not notarized)
+        run: |
+          brew install xcodegen
+          bash scripts/build-safari-extension.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securevault-safari-extension
+          path: dist-extension/securevault-safari-extension-*.zip
+          if-no-files-found: error
 
   ios-app:
     runs-on: macos-15

@@ -64,7 +64,7 @@ mod imp {
             // A fresh token per listener start: an old token copy is useless.
             ipc::rotate_token(&self.paths).map_err(|e| format!("토큰을 만들 수 없습니다: {e}"))?;
             let token = ipc::read_token(&self.paths).map_err(|e| e.to_string())?;
-            let gate = Arc::new(AutofillGate::new(&token, vec![ipc::extension_origin()]));
+            let gate = Arc::new(AutofillGate::new(&token, ipc::allowed_origins()));
             drop(token);
             let unlocked = self.unlocked.clone();
             let items: Arc<ItemsAccess> = Arc::new(move |f: &mut dyn FnMut(Option<&[VaultItem]>)| {

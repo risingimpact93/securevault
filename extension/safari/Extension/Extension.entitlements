@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Safari web extensions must be sandboxed. -->
+  <key>com.apple.security.app-sandbox</key><true/>
+  <!-- The only hole: the main app's private autofill folder (socket + token).
+       Ad-hoc signing cannot use App Groups (they need a Team ID), and the main
+       app is not sandboxed, so we point at its real data folder instead.
+       Unix sockets are file-system objects: no network entitlement is granted. -->
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+  <array>
+    <string>/Library/Application Support/com.securevault.app/autofill/</string>
+  </array>
+</dict>
+</plist>

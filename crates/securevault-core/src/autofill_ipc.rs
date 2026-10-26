@@ -39,6 +39,17 @@ pub const MAX_STDIN_MESSAGE: usize = 64 * 1024;
 /// Chrome rejects host → Chrome messages over 1 MB.
 pub const MAX_STDOUT_MESSAGE: usize = 1024 * 1024;
 
+/// Caller origin the Safari extension's native handler (inside the sandboxed
+/// appex shipped with "SecureVault Safari.app") sends. Safari's own extension
+/// origin is a random per-install UUID, so the handler uses this fixed value;
+/// the install token is what actually authenticates it.
+pub const SAFARI_CALLER_ORIGIN: &str = "safari-web-extension://com.securevault.safari.extension/";
+
+/// Origins the app's gate accepts.
+pub fn allowed_origins() -> Vec<String> {
+    vec![extension_origin(), SAFARI_CALLER_ORIGIN.to_string()]
+}
+
 pub fn extension_origin() -> String {
     format!("chrome-extension://{EXTENSION_ID}/")
 }
@@ -325,7 +336,7 @@ mod tests {
         let paths = AutofillPaths::new(tmp.path());
         rotate_token(&paths).unwrap();
         let token = read_token(&paths).unwrap();
-        let gate = Arc::new(AutofillGate::new(&token, vec![extension_origin()]));
+        let gate = Arc::new(AutofillGate::new(&token, allowed_origins()));
         let listener = bind_socket(&paths).unwrap();
         let items = vec![item("1", "github.com"), item("2", "gist.github.com")];
         let locked = Arc::new(std::sync::Mutex::new(false));
@@ -416,6 +427,20 @@ mod tests {
         rotate_token(&paths).unwrap();
         let a = host_answer(&paths, &extension_origin(), b"{\"op\":\"status\"}").await;
         assert_eq!(&*a, UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn safari_handler_origin() {
+        // The Swift relay talks to the socket directly with this origin.
+        let fx = start(current_uid()).await;
+        let token = read_token(&fx.paths).unwrap();
+        let req = build_request(br#"{"op":"status"}"#, &token, SAFARI_CALLER_ORIGIN).unwrap();
+        assert_eq!(&*ask_app(&fx.paths.socket, &req, current_uid()).await.unwrap(), r#"{"status":"unlocked"}"#);
+        let req = build_request(br#"{"op":"status"}"#, "wrong", SAFARI_CALLER_ORIGIN).unwrap();
+        assert_eq!(&*ask_app(&fx.paths.socket, &req, current_uid()).await.unwrap(), UNAUTHORIZED);
+        // But the Chrome stdio host never accepts the Safari origin from argv.
+        assert_eq!(&*host_answer(&fx.paths, SAFARI_CALLER_ORIGIN, br#"{"op":"status"}"#).await, UNAUTHORIZED);
+        let _ = fx.tx.send(true);
     }
 
     #[test]

@@ -271,3 +271,18 @@ securevault_core::autofill
 - SecAccessControlCreateFlags: https://developer.apple.com/documentation/security/secaccesscontrolcreateflags
 - Public Suffix List: https://publicsuffix.org/ , 형식 https://github.com/publicsuffix/list/wiki/Format
 - (비공식, 메모리 한도 추정 근거) https://support.keepassium.com/kb/autofill-memory/ , https://github.com/bitwarden/mobile/issues/2389
+
+## 3단계 결정: Safari는 별도 소형 containing app (2026-10-27)
+
+- **선택:** `SecureVault Safari.app` (xcodegen + xcodebuild, ad-hoc 서명)에 `.appex`를 담습니다. 메인 Tauri 앱 번들에는 넣지 않습니다.
+- **이유:**
+  - Safari 웹 확장 appex는 반드시 샌드박스를 켜야 하고, containing app의 번들에 Xcode 타깃으로 서명되어 들어가야 합니다. Tauri 번들러는 appex 타깃을 만들지 못하므로, 메인 앱에 넣으려면 서명 후처리가 필요하고 기존 DMG/공증 파이프라인이 깨질 위험이 있습니다.
+  - 메인 앱은 샌드박스 없이 그대로 두고(기존 화면, vault.khv, 경로 변경 없음), Safari 쪽만 독립적으로 빌드하고 지울 수 있습니다.
+- **샌드박스와 소켓:**
+  - App Group 컨테이너는 Team ID가 필요해 ad-hoc 서명으로는 쓸 수 없습니다. 메인 앱의 소켓 경로를 옮기지도 않았습니다.
+  - 그래서 appex에 `temporary-exception.files.home-relative-path.read-write` 하나만 주어, `~/Library/Application Support/com.securevault.app/autofill/`에만 접근합니다. 네트워크 entitlement는 없습니다.
+- **네이티브 핸들러:** `AutofillRelay.swift`가 Chrome 호스트와 같은 규칙을 따릅니다.
+  - 허용 키만 전달하고, 토큰은 0600이면서 소유자가 본인인 파일만 읽고, `getpeereid`로 상대 UID를 확인합니다.
+  - 64 KiB 상한, 10초 타임아웃, 로그 없음.
+  - caller origin은 고정값 `safari-web-extension://com.securevault.safari.extension/`이고, 앱 게이트가 이 값과 Chrome ID 두 개만 허용합니다.
+- **JS 공유:** Chrome의 `background.js`, `popup.*`, `lib/`를 그대로 복사하고, manifest만 `scripts/safari-manifest.mjs`로 변환합니다(`key` 제거, Safari 16.4 이상).
