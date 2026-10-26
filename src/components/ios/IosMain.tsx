@@ -343,7 +343,7 @@ function SwipeRow({
   }
 
   return (
-    <div className="ios-swipe">
+    <div className={`ios-swipe${offset !== 0 ? " revealed" : ""}`}>
       <div className="ios-swipe-actions" aria-hidden={!open}>
         {item.itemType === "login" && item.password ? (
           <button type="button" className="swipe-copy" onClick={onCopyPassword} tabIndex={open ? 0 : -1}>

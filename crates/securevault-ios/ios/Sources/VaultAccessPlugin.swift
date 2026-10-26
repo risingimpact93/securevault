@@ -2,6 +2,7 @@ import Foundation
 import Tauri
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
 
 struct PickResult: Encodable {
   let path: String
@@ -27,6 +28,19 @@ struct StageError: Error {
 /// Opens an existing vault with UIDocumentPicker in place (not a copy into a
 /// temp file) and returns security-scoped bookmark bytes.
 class VaultAccessPlugin: Plugin {
+  // The web UI handles safe areas itself (viewport-fit=cover + env()).
+  // Without this, UIKit adds automatic scroll insets and the page's
+  // viewport ends ~93pt above the bottom of the screen.
+  override func load(webview: WKWebView) {
+    super.load(webview: webview)
+    DispatchQueue.main.async {
+      webview.scrollView.contentInsetAdjustmentBehavior = .never
+      webview.scrollView.contentInset = .zero
+      webview.scrollView.scrollIndicatorInsets = .zero
+      webview.scrollView.bounces = false
+    }
+  }
+
   private var picker: UIDocumentPickerViewController?
   private var pending: Invoke?
 

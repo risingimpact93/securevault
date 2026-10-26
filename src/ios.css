@@ -310,7 +310,7 @@ html.ios-main body {
   overflow: hidden;
 }
 
-.ios-row {
+.ios-root .ios-row {
   position: relative;
   display: flex;
   align-items: center;
@@ -338,12 +338,11 @@ html.ios-main body {
   left: 68px;
 }
 
-.ios-row:active,
-.ios-row.ios-field:active {
+.ios-root .ios-row:active {
   background: var(--ios-card-pressed);
 }
 
-.ios-row-item {
+.ios-root .ios-row-item {
   padding-top: 9px;
   padding-bottom: 9px;
   min-height: 60px;
@@ -408,10 +407,14 @@ html.ios-main body {
   background: var(--ios-card);
 }
 
-.ios-swipe .ios-row-item {
+.ios-root .ios-swipe .ios-row-item {
   position: relative;
   z-index: 1;
   touch-action: pan-y;
+}
+
+.ios-swipe:not(.revealed) .ios-swipe-actions {
+  visibility: hidden;
 }
 
 .ios-swipe-actions {
@@ -478,7 +481,7 @@ html.ios-main body {
   color: var(--ios-label-2);
 }
 
-.ios-field {
+.ios-root .ios-field {
   cursor: pointer;
   padding-top: 10px;
   padding-bottom: 10px;
@@ -546,7 +549,7 @@ html.ios-main body {
   height: 12px;
 }
 
-.ios-input-row {
+.ios-root .ios-input-row {
   cursor: text;
 }
 
@@ -593,7 +596,7 @@ html.ios-main body {
   font-weight: 600;
 }
 
-.ios-textarea-row {
+.ios-root .ios-textarea-row {
   padding: 8px 16px;
 }
 
