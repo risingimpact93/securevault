@@ -1131,14 +1131,14 @@ pub fn unlock_file_with_secret_key(
     secret_key: Option<&str>,
     store: Option<&dyn crate::secret_key_store::SecretKeyStore>,
 ) -> Result<UnlockedVault, VaultError> {
-    if !path.exists() {
+    if !crate::vault_io::exists(path) {
         if crate::sync::icloud_placeholder(path).is_some_and(|placeholder| placeholder.exists()) {
             crate::sync::prompt_icloud_download(path);
             return Err(VaultError::WaitingForIcloud);
         }
         return Err(VaultError::NotFound);
     }
-    let bytes = fs::read(path)?;
+    let bytes = crate::vault_io::read(path)?;
     let enc: EncryptedVault = parse_encrypted(&bytes)?;
     let sk = resolve_secret_key(&enc, secret_key, store)?;
     let (key, salt, mut data) = unlock_with_secret(&enc, password, sk.as_ref())?;
@@ -1150,10 +1150,10 @@ pub fn unlock_file_with_secret_key(
 }
 
 pub fn peek_secret_key_header(path: &Path) -> Result<(bool, Option<String>), VaultError> {
-    if !path.exists() {
+    if !crate::vault_io::exists(path) {
         return Err(VaultError::NotFound);
     }
-    let bytes = fs::read(path)?;
+    let bytes = crate::vault_io::read(path)?;
     let enc = parse_encrypted(&bytes)?;
     Ok((enc.sk_enabled, enc.sk_fingerprint))
 }
@@ -1453,10 +1453,10 @@ pub fn decrypt_data(file: &EncryptedVault, key: &VaultKey) -> Result<VaultData, 
 
 /// Decrypt a vault file with a key already recovered from the keychain or a PRF wrap.
 pub fn unlock_file_with_key(path: &Path, key: &VaultKey) -> Result<UnlockedVault, VaultError> {
-    if !path.exists() {
+    if !crate::vault_io::exists(path) {
         return Err(VaultError::NotFound);
     }
-    let bytes = fs::read(path)?;
+    let bytes = crate::vault_io::read(path)?;
     let enc: EncryptedVault = parse_encrypted(&bytes)?;
     let mut data = decrypt_data(&enc, key)?;
     crate::sync::migrate_data(&mut data);

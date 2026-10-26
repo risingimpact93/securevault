@@ -22,8 +22,14 @@ if [ ! -d src-tauri/gen/apple ] || [ -z "$EXISTING" ]; then
   echo "Generating the Xcode project (src-tauri/gen/apple is not committed)."
   npx tauri ios init --ci --skip-targets-install
 fi
+PBX=$(find src-tauri/gen/apple -name project.pbxproj | head -n 1)
+echo "After init, AppIcon name lines in pbxproj: $(grep -c 'ASSETCATALOG_COMPILER_APPICON_NAME' "$PBX" || true)"
 
 sh scripts/ios-prepare.sh
+if ! grep -q 'ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;' "$PBX"; then
+  echo "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon is missing from $PBX after ios-prepare." >&2
+  exit 1
+fi
 if grep -Eq '(^|[^0-9A-Za-z_])0 *\$\{ARCHS' src-tauri/gen/apple/project.yml 2>/dev/null; then
   echo "Stray 0 before ARCHS is still present." >&2
   exit 1
@@ -142,7 +148,7 @@ if [ -z "$MARKER" ]; then
 fi
 echo "vault-access plugin status: $(cat "$MARKER")"
 cp "$MARKER" "$OUT/plugin-status.txt"
-if ! grep -q '^ok vault-access' "$MARKER"; then
+if ! grep -q '^ok vault-access io-roundtrip' "$MARKER"; then
   echo "The vault-access plugin is not registered or did not answer." >&2
   exit 1
 fi

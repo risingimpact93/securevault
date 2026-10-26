@@ -16,6 +16,7 @@ pub mod secret_key;
 pub mod secret_key_store;
 pub mod sync;
 pub mod vault;
+pub mod vault_io;
 
 #[cfg(target_os = "ios")]
 mod ios_device;

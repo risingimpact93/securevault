@@ -1,6 +1,8 @@
 mod ios_access;
 #[cfg(target_os = "ios")]
 mod ios_bookmark;
+#[cfg(target_os = "ios")]
+mod ios_vault_io;
 mod mcp_host;
 mod platform;
 
@@ -360,7 +362,7 @@ fn require_unlocked(state: &AppState) -> Result<std::sync::MutexGuard<'_, Option
 fn vault_exists(app: AppHandle) -> Result<bool, String> {
     let path = vault_path(&app)?;
     let placeholder = sync::icloud_placeholder(&path).is_some_and(|candidate| candidate.exists());
-    Ok(path.exists() || placeholder)
+    Ok(securevault_core::vault_io::exists(&path) || placeholder)
 }
 
 #[tauri::command]
@@ -439,7 +441,7 @@ fn unlock(
 fn secret_key_status(app: AppHandle) -> Result<SecretKeyStatusView, String> {
     let path = vault_path(&app)?;
     let store = sk_store(&app)?;
-    if !path.exists() {
+    if !securevault_core::vault_io::exists(&path) {
         return Ok(SecretKeyStatusView {
             enabled: false,
             stored: false,
@@ -700,13 +702,11 @@ fn store_picked_vault(app: &AppHandle, path: &Path, bookmark: &str) -> Result<St
     let record_path;
     let record_bookmark;
     if !bookmark.trim().is_empty() {
-        #[cfg(target_os = "ios")]
-        {
-            let _ = ios_bookmark::resolve_bookmark(bookmark);
-        }
         record_path = path.display().to_string();
         record_bookmark = bookmark.to_string();
         remember_vault_path(app, path.to_path_buf())?;
+        #[cfg(target_os = "ios")]
+        ios_vault_io::install(app, &vault_path(app)?, bookmark, &local.data_dir)?;
     } else {
         let copied = ios_access::copy_into_app_dir(&local.data_dir, path)?;
         record_path = copied.display().to_string();
@@ -728,7 +728,14 @@ async fn ios_plugin_status(app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "ios")]
     {
         let result = match securevault_ios::ping(&app).await {
-            Ok(ping) if ping.ok => Ok(ping.plugin),
+            Ok(ping) if ping.ok => {
+                let app2 = app.clone();
+                match tauri::async_runtime::spawn_blocking(move || ios_vault_io::self_test(&app2)).await {
+                    Ok(Ok(io)) => Ok(format!("{} {io}", ping.plugin)),
+                    Ok(Err(e)) => Err(format!("파일 입출력 자체 점검 실패: {e}")),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
             Ok(_) => Err("vault-access 플러그인이 ok를 돌려주지 않았습니다.".to_string()),
             Err(err) => Err(err),
         };
@@ -1506,6 +1513,14 @@ fn restore_bookmarked_vault(app: &AppHandle) {
     };
     if let Some(path) = ios_access::restore(&local.data_dir) {
         let _ = remember_vault_path(app, path);
+        #[cfg(target_os = "ios")]
+        if let Some(record) = ios_access::load_record(&local.data_dir) {
+            if !record.bookmark.trim().is_empty() {
+                if let Ok(path) = vault_path(app) {
+                    let _ = ios_vault_io::install(app, &path, &record.bookmark, &local.data_dir);
+                }
+            }
+        }
     }
 }
 

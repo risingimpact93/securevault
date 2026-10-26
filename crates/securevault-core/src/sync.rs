@@ -564,6 +564,10 @@ fn waiting_status(real: &Path) -> OpenVaultStatus {
 }
 
 pub fn conflict_siblings(vault_path: &Path) -> Vec<PathBuf> {
+    // A single picked file (iOS bookmark) grants no access to its folder.
+    if crate::vault_io::is_scoped(vault_path) {
+        return Vec::new();
+    }
     let Some(parent) = vault_path.parent() else {
         return Vec::new();
     };
@@ -613,14 +617,14 @@ pub fn is_conflict_sibling(vault_path: &Path, candidate: &Path) -> bool {
 }
 
 pub fn capture_stamp(path: &Path, revision: u64) -> Result<FileStamp, VaultError> {
-    let bytes = fs::read(path)?;
-    let meta = fs::metadata(path)?;
+    let bytes = crate::vault_io::read(path)?;
+    let meta = crate::vault_io::stat(path)?;
     let enc = parse_encrypted(&bytes)?;
     Ok(FileStamp {
         revision,
         nonce: enc.nonce,
         hash: sha256(&bytes),
-        modified: meta.modified().ok(),
+        modified: meta.and_then(|meta| meta.modified),
         len: bytes.len() as u64,
     })
 }
@@ -674,7 +678,7 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
     }
     migrate_data(&mut unlocked.data);
 
-    if !path.exists() {
+    if !crate::vault_io::exists(path) {
         if icloud_placeholder(path).is_some_and(|placeholder| placeholder.exists()) {
             unlocked.waiting_icloud = true;
             unlocked.sync_error = None;
@@ -692,8 +696,8 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
     }
 
     for _attempt in 0..4 {
-        let bytes = fs::read(path)?;
-        let meta = fs::metadata(path)?;
+        let bytes = crate::vault_io::read(path)?;
+        let modified = crate::vault_io::stat(path)?.and_then(|meta| meta.modified);
         let enc = match parse_encrypted(&bytes) {
             Ok(enc) => enc,
             Err(err) => {
@@ -732,7 +736,7 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
                         revision: incorporated_revision,
                         nonce: enc.nonce.clone(),
                         hash,
-                        modified: meta.modified().ok(),
+                        modified,
                         len: bytes.len() as u64,
                     };
                     unlocked.waiting_icloud = false;
@@ -753,8 +757,8 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
                     return Err(err);
                 }
             }
-        } else if unlocked.stamp.modified != meta.modified().ok() || unlocked.stamp.len != bytes.len() as u64 {
-            unlocked.stamp.modified = meta.modified().ok();
+        } else if unlocked.stamp.modified != modified || unlocked.stamp.len != bytes.len() as u64 {
+            unlocked.stamp.modified = modified;
             unlocked.stamp.len = bytes.len() as u64;
             let _ = incorporated_revision;
         }
@@ -803,7 +807,7 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
             return Ok(());
         }
 
-        let again = fs::read(path)?;
+        let again = crate::vault_io::read(path)?;
         if sha256(&again) != hash {
             continue;
         }
@@ -824,6 +828,9 @@ fn sync_locked(path: &Path, unlocked: &mut UnlockedVault, force_write: bool) -> 
 }
 
 fn collect_locked_siblings(vault_path: &Path, pending: &mut Vec<String>) {
+    if crate::vault_io::is_scoped(vault_path) {
+        return;
+    }
     for sibling in conflict_siblings(vault_path) {
         let text = sibling.to_string_lossy().into_owned();
         if !pending.iter().any(|path| path == &text) {
@@ -838,10 +845,13 @@ fn write_current(path: &Path, unlocked: &mut UnlockedVault) -> Result<(), VaultE
     unlocked.data.device_id = unlocked.device_id.clone();
     let enc = vault::encrypt_unlocked(unlocked)?;
     let bytes = vault::serialize_encrypted(&enc)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    // A scoped (iOS bookmark) vault has no access to its folder: no mkdir, no temp file.
+    if !crate::vault_io::is_scoped(path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
     }
-    vault::atomic_write(path, &bytes)?;
+    crate::vault_io::write(path, &bytes)?;
     unlocked.stamp = capture_stamp(path, unlocked.data.revision)?;
     unlocked.dirty = false;
     unlocked.waiting_icloud = false;
@@ -961,7 +971,7 @@ fn finalize_merged_backups(
             move_into_backup(path, backup_dir, &backup_name_for(path))?;
         }
     }
-    if let Some(folder) = vault_path.parent() {
+    if let Some(folder) = vault_path.parent().filter(|_| !crate::vault_io::is_scoped(vault_path)) {
         if !same_path(folder, backup_dir) {
             for path in merged_backup_files(folder) {
                 if path.exists() && !same_path(&path, vault_path) {
