@@ -4003,7 +4003,7 @@ dependencies = [
 
 [[package]]
 name = "securevault"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -4050,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-core"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4063,6 +4063,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "idna",
  "libc",
  "objc2",
  "objc2-foundation",
@@ -4078,13 +4079,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "url",
  "uuid",
  "zeroize",
 ]
 
 [[package]]
 name = "securevault-ios"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4094,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-web"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

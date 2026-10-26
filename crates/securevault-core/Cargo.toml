@@ -30,6 +30,8 @@ uuid = { version = "=1.19.0", features = ["v4", "serde"] }
 chrono = { version = "=0.4.40", default-features = false, features = ["clock", "std", "serde"] }
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 secrecy = "0.8"
+url = "=2.5.4"
+idna = "=1.0.3"
 thiserror = "2"
 # Pinned for rustc 1.85. pdf-writer 0.12.1 MSRV is well below 1.85; printpdf 0.12 needs rustc 1.88.
 pdf-writer = "=0.12.1"
