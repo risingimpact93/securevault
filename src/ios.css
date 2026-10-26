@@ -965,3 +965,15 @@ html.ios-main .toast {
 html.ios-main .toast.err {
   background: rgba(200, 40, 40, 0.95);
 }
+
+/* If WKWebView's fixed-position viewport stops above the home indicator
+   (seen in the simulator), the strip below shows the body: match the tab bar. */
+html.ios-main,
+html.ios-main body {
+  background: #161618;
+}
+
+html.ios-main[data-theme="light"],
+html.ios-main[data-theme="light"] body {
+  background: #f9f9f9;
+}
