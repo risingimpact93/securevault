@@ -1,19 +1,20 @@
 {
   "name": "securevault",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "web": "cargo run -p securevault-web -- --dev-insecure-cookie"
+    "web": "cargo run -p securevault-web -- --dev-insecure-cookie",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
-    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
     "@tauri-apps/plugin-barcode-scanner": "2.4.3",
+    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
     "@tauri-apps/plugin-dialog": "2.3.3",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.5.2",
     "typescript": "~5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vitest": "3.2.7"
   }
 }

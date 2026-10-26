@@ -4003,7 +4003,7 @@ dependencies = [
 
 [[package]]
 name = "securevault"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -4050,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4084,7 +4084,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-ios"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4094,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "securevault-web"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "axum",
  "base64 0.22.1",

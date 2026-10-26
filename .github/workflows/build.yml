@@ -16,7 +16,7 @@ jobs:
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
-      - run: npm ci && npm run build
+      - run: npm ci && npm test && npm run build
       - run: cargo test --workspace
       - run: cargo build --release -p securevault-web
       - uses: actions/upload-artifact@v4

@@ -120,17 +120,17 @@ pub async fn site_icon(data_dir: std::path::PathBuf, url: &str, force: bool, dem
     }
     let origin = favicon::icon_origin(url)?;
     let cache = IconCache::new(&data_dir);
-    if !force {
-        match cache.get(&origin, now()) {
-            CacheHit::Icon(data) => return Some(data),
-            CacheHit::Missing => return None,
-            CacheHit::Stale => {}
-        }
-    }
-    let _permit = limiter().acquire().await.ok()?;
+    let previous = match cache.get(&origin, now()) {
+        CacheHit::Icon(data) if !force => return Some(data),
+        CacheHit::Missing if !force => return None,
+        CacheHit::Icon(data) => Some(data),
+        CacheHit::Missing => None,
+        CacheHit::Stale { previous } => previous,
+    };
+    let Ok(_permit) = limiter().acquire().await else { return previous };
     let fetched = fetch_icon(&origin).await;
-    let _ = cache.put(&origin, fetched.as_ref().map(|(m, b)| (*m, b.as_slice())), now());
-    fetched.map(|(mime, bytes)| favicon::data_url(mime, &bytes))
+    // Success replaces the icon; any failure keeps (and returns) the old one.
+    cache.record(&origin, fetched.as_ref().map(|(m, b)| (*m, b.as_slice())), previous, now())
 }
 
 pub fn clear(data_dir: &std::path::Path) -> Result<(), String> {

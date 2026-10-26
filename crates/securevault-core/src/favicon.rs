@@ -345,28 +345,43 @@ pub fn demo_icon(host: &str) -> Option<String> {
     Some(data_url("image/svg+xml", svg.as_bytes()))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CacheMeta {
     origin: String,
-    fetched_at: i64,
+    /// Time of the last *successful* lookup (icon found, or site had none).
+    #[serde(default)]
+    fetched_at: Option<i64>,
+    /// Mime of the stored icon; `None` = no icon stored.
+    #[serde(default)]
     mime: Option<String>,
+    /// Time of the last failed fetch (offline, timeout, bad response).
+    /// Tracked separately so a failure never touches a good icon.
+    #[serde(default)]
+    failed_at: Option<i64>,
 }
 
 /// Result of a cache lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheHit {
-    /// Fresh icon (data URL).
+    /// Use this icon now; no fetch needed (fresh, or expired but a refetch
+    /// failed recently, so we back off and keep showing it).
     Icon(String),
-    /// Fresh "this site has no usable icon".
+    /// No icon and a recent lookup found none / failed: show the avatar.
     Missing,
-    /// Not cached, expired, or for a different origin: fetch again.
-    Stale,
+    /// Fetch again. `previous` is an expired icon to show meanwhile and to
+    /// fall back on if the fetch fails.
+    Stale { previous: Option<String> },
 }
 
 /// Icon cache in `<data_dir>/site-icons/`, one `<sha256(host)>.json` +
-/// `<sha256(host)>.img` pair per origin. Separate from the vault file.
+/// `<sha256(host)>.img` pair per origin. Separate from the vault file and
+/// local to this device.
 pub struct IconCache {
     dir: PathBuf,
+}
+
+fn recent(t: Option<i64>, now: i64, ttl: i64) -> bool {
+    t.is_some_and(|t| (0..ttl).contains(&(now - t)))
 }
 
 impl IconCache {
@@ -383,45 +398,76 @@ impl IconCache {
         (self.dir.join(format!("{key}.json")), self.dir.join(format!("{key}.img")))
     }
 
+    fn meta(&self, origin: &IconOrigin) -> Option<CacheMeta> {
+        let raw = fs::read(self.paths(origin).0).ok()?;
+        let meta = serde_json::from_slice::<CacheMeta>(&raw).ok()?;
+        (meta.origin == origin.base()).then_some(meta)
+    }
+
+    /// The stored icon regardless of age.
+    fn stored_icon(&self, origin: &IconOrigin, meta: &CacheMeta) -> Option<String> {
+        let mime = meta.mime.as_deref()?;
+        let bytes = fs::read(self.paths(origin).1).ok()?;
+        sniff_image(&bytes)?;
+        Some(data_url(mime, &bytes))
+    }
+
     pub fn get(&self, origin: &IconOrigin, now: i64) -> CacheHit {
-        let (meta_path, img_path) = self.paths(origin);
-        let Ok(raw) = fs::read(&meta_path) else { return CacheHit::Stale };
-        let Ok(meta) = serde_json::from_slice::<CacheMeta>(&raw) else { return CacheHit::Stale };
-        if meta.origin != origin.base() {
-            return CacheHit::Stale;
-        }
-        let age = now - meta.fetched_at;
-        match meta.mime {
-            Some(mime) => {
-                if !(0..ICON_TTL_SECS).contains(&age) {
-                    return CacheHit::Stale;
-                }
-                match fs::read(&img_path) {
-                    Ok(bytes) if sniff_image(&bytes).is_some() => CacheHit::Icon(data_url(&mime, &bytes)),
-                    _ => CacheHit::Stale,
-                }
+        let Some(meta) = self.meta(origin) else { return CacheHit::Stale { previous: None } };
+        let icon = self.stored_icon(origin, &meta);
+        match icon {
+            Some(icon) if recent(meta.fetched_at, now, ICON_TTL_SECS) => CacheHit::Icon(icon),
+            Some(icon) if recent(meta.failed_at, now, NEGATIVE_TTL_SECS) => CacheHit::Icon(icon),
+            Some(icon) => CacheHit::Stale { previous: Some(icon) },
+            None if meta.mime.is_none()
+                && (recent(meta.fetched_at, now, NEGATIVE_TTL_SECS) || recent(meta.failed_at, now, NEGATIVE_TTL_SECS)) =>
+            {
+                CacheHit::Missing
             }
-            None if (0..NEGATIVE_TTL_SECS).contains(&age) => CacheHit::Missing,
-            None => CacheHit::Stale,
+            None => CacheHit::Stale { previous: None },
         }
     }
 
-    /// Store a fetched icon (`Some((mime, bytes))`) or a miss (`None`).
-    pub fn put(&self, origin: &IconOrigin, icon: Option<(&str, &[u8])>, now: i64) -> io::Result<()> {
+    /// A successful fetch found this icon: the only way an icon is replaced.
+    pub fn put_icon(&self, origin: &IconOrigin, mime: &str, bytes: &[u8], now: i64) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let (meta_path, img_path) = self.paths(origin);
-        match icon {
-            Some((_, bytes)) => fs::write(&img_path, bytes)?,
-            None => {
-                let _ = fs::remove_file(&img_path);
+        let tmp = img_path.with_extension("img.tmp");
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, &img_path)?;
+        let meta = CacheMeta { origin: origin.base(), fetched_at: Some(now), mime: Some(mime.to_string()), failed_at: None };
+        fs::write(&meta_path, serde_json::to_vec(&meta).map_err(io::Error::other)?)
+    }
+
+    /// The fetch failed (offline, timeout, no usable icon). Records the time
+    /// only; a previously stored icon is kept as is and still shown.
+    pub fn put_failure(&self, origin: &IconOrigin, now: i64) -> io::Result<()> {
+        fs::create_dir_all(&self.dir)?;
+        let mut meta = self.meta(origin).unwrap_or_else(|| CacheMeta { origin: origin.base(), ..Default::default() });
+        meta.failed_at = Some(now);
+        fs::write(self.paths(origin).0, serde_json::to_vec(&meta).map_err(io::Error::other)?)
+    }
+
+    /// Record a fetch outcome and return what to display: the new icon on
+    /// success, otherwise the previous (possibly expired) icon, otherwise
+    /// `None` so the UI shows the initial avatar.
+    pub fn record(
+        &self,
+        origin: &IconOrigin,
+        fetched: Option<(&str, &[u8])>,
+        previous: Option<String>,
+        now: i64,
+    ) -> Option<String> {
+        match fetched {
+            Some((mime, bytes)) if sniff_image(bytes).is_some() => {
+                let _ = self.put_icon(origin, mime, bytes, now);
+                Some(data_url(mime, bytes))
+            }
+            _ => {
+                let _ = self.put_failure(origin, now);
+                previous.or_else(|| self.meta(origin).and_then(|m| self.stored_icon(origin, &m)))
             }
         }
-        let meta = CacheMeta {
-            origin: origin.base(),
-            fetched_at: now,
-            mime: icon.map(|(m, _)| m.to_string()),
-        };
-        fs::write(&meta_path, serde_json::to_vec(&meta).map_err(io::Error::other)?)
     }
 
     pub fn clear(&self) -> io::Result<()> {
@@ -530,22 +576,77 @@ mod tests {
         assert_eq!(sniff_image(&vec![0x89; MAX_BYTES + 1]), None);
     }
 
-    #[test]
-    fn cache_ttl_negative_entries_and_clear() {
+    fn temp_cache() -> (PathBuf, IconCache) {
         let dir = std::env::temp_dir().join(format!("sv-icons-{}", uuid::Uuid::new_v4()));
         let cache = IconCache::new(&dir);
+        (dir, cache)
+    }
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nrest";
+    const PNG2: &[u8] = b"\x89PNG\r\n\x1a\nnewer";
+
+    #[test]
+    fn cache_ttl_and_clear() {
+        let (dir, cache) = temp_cache();
         let origin = o("example.com");
-        assert_eq!(cache.get(&origin, 1000), CacheHit::Stale);
-        let png = b"\x89PNG\r\n\x1a\nrest";
-        cache.put(&origin, Some(("image/png", png)), 1000).unwrap();
-        assert!(matches!(cache.get(&origin, 1000 + 60), CacheHit::Icon(u) if u.starts_with("data:image/png;base64,")));
-        assert_eq!(cache.get(&origin, 1000 + ICON_TTL_SECS), CacheHit::Stale);
-        cache.put(&origin, None, 5000).unwrap();
-        assert_eq!(cache.get(&origin, 5001), CacheHit::Missing);
-        assert_eq!(cache.get(&origin, 5000 + NEGATIVE_TTL_SECS), CacheHit::Stale);
+        assert_eq!(cache.get(&origin, 1000), CacheHit::Stale { previous: None });
+        cache.put_icon(&origin, "image/png", PNG, 1000).unwrap();
+        assert_eq!(cache.get(&origin, 1060), CacheHit::Icon(data_url("image/png", PNG)));
+        // Expired: refetch, but keep the old icon on hand.
+        assert_eq!(
+            cache.get(&origin, 1000 + ICON_TTL_SECS),
+            CacheHit::Stale { previous: Some(data_url("image/png", PNG)) }
+        );
+        // A different origin with the same key file never matches.
+        assert_eq!(cache.get(&o("other.com"), 1060), CacheHit::Stale { previous: None });
         cache.clear().unwrap();
         assert!(!cache.dir().exists());
         cache.clear().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn offline_expired_cache_keeps_old_icon() {
+        let (dir, cache) = temp_cache();
+        let origin = o("example.com");
+        cache.put_icon(&origin, "image/png", PNG, 0).unwrap();
+        let later = ICON_TTL_SECS + 10;
+        let CacheHit::Stale { previous } = cache.get(&origin, later) else { panic!("expected stale") };
+        // Fetch fails (offline): still show the old icon.
+        let shown = cache.record(&origin, None, previous, later);
+        assert_eq!(shown, Some(data_url("image/png", PNG)));
+        // Backed off for a day, and the icon is still served, not erased.
+        assert_eq!(cache.get(&origin, later + 60), CacheHit::Icon(data_url("image/png", PNG)));
+        // After the back-off it retries, still offering the old icon.
+        assert_eq!(
+            cache.get(&origin, later + NEGATIVE_TTL_SECS),
+            CacheHit::Stale { previous: Some(data_url("image/png", PNG)) }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failure_never_overwrites_a_good_icon() {
+        let (dir, cache) = temp_cache();
+        let origin = o("example.com");
+        cache.put_icon(&origin, "image/png", PNG, 0).unwrap();
+        // Failure even without `previous` (forced refresh) keeps the stored icon.
+        assert_eq!(cache.record(&origin, None, None, 50), Some(data_url("image/png", PNG)));
+        // A bogus "image" counts as a failure, not a replacement.
+        assert_eq!(cache.record(&origin, Some(("image/png", b"<html>")), None, 60), Some(data_url("image/png", PNG)));
+        assert_eq!(cache.get(&origin, 70), CacheHit::Icon(data_url("image/png", PNG)));
+        // Only a successful fetch replaces it, and clears the failure mark.
+        assert_eq!(cache.record(&origin, Some(("image/png", PNG2)), None, 80), Some(data_url("image/png", PNG2)));
+        assert_eq!(cache.get(&origin, 90), CacheHit::Icon(data_url("image/png", PNG2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_cache_and_failure_falls_back_to_avatar() {
+        let (dir, cache) = temp_cache();
+        let origin = o("example.com");
+        assert_eq!(cache.record(&origin, None, None, 100), None);
+        assert_eq!(cache.get(&origin, 160), CacheHit::Missing);
+        assert_eq!(cache.get(&origin, 100 + NEGATIVE_TTL_SECS), CacheHit::Stale { previous: None });
         let _ = std::fs::remove_dir_all(&dir);
     }
 

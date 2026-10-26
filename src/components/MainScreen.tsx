@@ -1,4 +1,7 @@
 import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import SiteIcon from "./SiteIcon";
+import { clearSiteIconCache, refreshSiteIcons, setSiteIconsEnabled, useSiteIconsEnabled } from "../siteIcons";
+import { decideReplace, REPLACE_PROMPT, resolveReplace } from "../passwordReplace";
 import {
   addItem,
   biometricDisable,
@@ -152,6 +155,7 @@ export default function MainScreen({
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [genOpen, setGenOpen] = useState(false);
   const [genForField, setGenForField] = useState(false);
+  const [pendingPw, setPendingPw] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | "end" | null>(null);
   const [kit, setKit] = useState<EmergencyKitData | null>(null);
@@ -405,6 +409,7 @@ export default function MainScreen({
                   }}
                 >
                   <div className="title">
+                    {item.itemType === "login" ? <SiteIcon item={item} size={18} /> : null}
                     <span>{item.title}</span>
                     {item.favorite ? <span className="star">★</span> : null}
                   </div>
@@ -463,6 +468,7 @@ export default function MainScreen({
             목록
           </button>
           {editing === "settings" ? (
+            <>
             <SettingsPanel
               settings={settings}
               syncStatus={syncStatus}
@@ -476,6 +482,8 @@ export default function MainScreen({
                 setKit(next);
               }}
             />
+            <MacSiteIconSettings onToast={onToast} />
+            </>
           ) : editing === "new" || editing === "edit" ? (
             <ItemEditor
               key={editing === "new" ? "new" : selected?.id ?? "edit"}
@@ -516,6 +524,11 @@ export default function MainScreen({
             setGenForField(false);
           }}
           onUse={(pw) => {
+            if (genForField && decideReplace(draft.password) === "confirm") {
+              // Keep the generator open underneath; only replace on 바꾸기.
+              setPendingPw(pw);
+              return;
+            }
             if (genForField) {
               setDraft((d) => ({ ...d, password: pw }));
             }
@@ -524,6 +537,33 @@ export default function MainScreen({
           }}
           onCopy={(pw) => void handleCopy(pw, "비밀번호")}
         />
+      ) : null}
+
+      {pendingPw !== null ? (
+        <div className="modal-backdrop" onClick={() => setPendingPw(null)}>
+          <div className="modal" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <h2>비밀번호 바꾸기</h2>
+            <p className="lede">{REPLACE_PROMPT}</p>
+            <div className="actions">
+              <button
+                className="btn btn-danger"
+                autoFocus
+                onClick={() => {
+                  const pw = pendingPw;
+                  setDraft((d) => ({ ...d, password: resolveReplace(d.password, pw, true) }));
+                  setPendingPw(null);
+                  setGenOpen(false);
+                  setGenForField(false);
+                }}
+              >
+                바꾸기
+              </button>
+              <button className="btn btn-ghost" onClick={() => setPendingPw(null)}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {confirmId ? (
@@ -574,7 +614,10 @@ function ItemDetail({
       <div className="badge">{typeLabel(item.itemType)}</div>
       <div className="detail-head">
         <div>
-          <h2>{item.title}</h2>
+          <h2 className={item.itemType === "login" ? "with-site-icon" : undefined}>
+            {item.itemType === "login" ? <SiteIcon item={item} size={30} /> : null}
+            {item.title}
+          </h2>
           <p className="lede" style={{ marginBottom: 0 }}>
             {item.favorite ? "즐겨찾기 등록됨 · " : ""}
             수정 {new Date(item.updatedAt).toLocaleString("ko-KR")}
@@ -1610,6 +1653,49 @@ export function SettingsPanel({
       </form>
       {ios ? null : <McpSettings onToast={onToast} />}
       <BuildStamp />
+    </div>
+  );
+}
+
+/* Mac-only settings section (iOS has its own in IosMain). Icons and their
+   cache live in this device's app data folder, never in the vault file. */
+function MacSiteIconSettings({ onToast }: { onToast: (toast: Omit<Toast, "id">) => void }) {
+  const on = useSiteIconsEnabled();
+  return (
+    <div className="card">
+      <h3>사이트 아이콘</h3>
+      <p className="lede">
+        켜 두면 로그인 항목의 사이트 주소에서만 아이콘을 직접 받아옵니다(HTTPS, 외부 아이콘 서비스 사용 안 함). 비밀번호나
+        항목 내용은 전송하지 않으며, 아이콘은 이 기기에 7일 동안 보관됩니다. 오프라인이면 저장된 아이콘을 계속 보여 줍니다.
+      </p>
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input type="checkbox" checked={on} onChange={(e) => setSiteIconsEnabled(e.target.checked)} />
+        사이트 아이콘 표시
+      </label>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={!on}
+          onClick={() => {
+            refreshSiteIcons(true);
+            onToast({ kind: "ok", message: "아이콘을 새로 받아옵니다" });
+          }}
+        >
+          아이콘 새로 고침
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => {
+            clearSiteIconCache()
+              .then(() => onToast({ kind: "ok", message: "아이콘 캐시를 지웠습니다" }))
+              .catch((e) => onToast({ kind: "err", message: String(e) }));
+          }}
+        >
+          아이콘 캐시 지우기
+        </button>
+      </div>
     </div>
   );
 }

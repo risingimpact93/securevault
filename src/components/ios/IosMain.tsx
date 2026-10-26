@@ -21,6 +21,7 @@ import type {
 } from "../../types";
 import EmergencyKit from "../EmergencyKit";
 import { SettingsPanel } from "../MainScreen";
+import { decideReplace, REPLACE_PROMPT } from "../../passwordReplace";
 import { clearSiteIconCache, refreshSiteIcons, setSiteIconsEnabled, useSiteIcon, useSiteIconsEnabled } from "../../siteIcons";
 
 /* iOS-only shell (iPhone app, or the web UI opened on an iPhone).
@@ -490,6 +491,9 @@ export default function IosMain(props: Props) {
       case "edit":
         setRoute({ kind: "edit", id: first.id });
         break;
+      case "replace":
+        setRoute({ kind: "edit", id: first.id });
+        break;
       case "new":
         setRoute({ kind: "edit", id: null });
         break;
@@ -574,6 +578,7 @@ export default function IosMain(props: Props) {
     page = (
       <EditPage
         key={route.id ?? "new"}
+        demoReplace={demo?.view === "replace"}
         item={route.id ? current : null}
         onCancel={() => setRoute(route.id ? { kind: "detail", id: route.id } : { kind: "list" })}
         onSaved={(id) => setRoute({ kind: "detail", id })}
@@ -972,8 +977,10 @@ function EditPage({
   onDeleted,
   onReload,
   onToast,
+  demoReplace = false,
 }: {
   item: VaultItem | null;
+  demoReplace?: boolean;
   onCancel: () => void;
   onSaved: (id: string) => void;
   onDeleted: () => void;
@@ -983,6 +990,7 @@ function EditPage({
   const [draft, setDraft] = useState<ItemDraft>(item ? itemToDraft(item) : emptyDraft("login"));
   const [tagText, setTagText] = useState((item?.tags ?? []).join(", "));
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReplace, setConfirmReplace] = useState(demoReplace);
   const [busy, setBusy] = useState(false);
   const isNew = !item;
 
@@ -1032,7 +1040,12 @@ function EditPage({
     }
   }
 
-  async function fillPassword() {
+  async function fillPassword(confirmed = false) {
+    if (!confirmed && decideReplace(draft.password) === "confirm") {
+      setConfirmReplace(true);
+      return;
+    }
+    setConfirmReplace(false);
     try {
       set("password", await generatePassword(DEFAULT_GEN));
     } catch (err) {
@@ -1147,6 +1160,23 @@ function EditPage({
             </div>
             <div className="ios-sheet-group">
               <button type="button" className="ios-sheet-btn bold" onClick={() => setConfirmDelete(false)}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {confirmReplace ? (
+        <div className="ios-sheet-backdrop" onClick={() => setConfirmReplace(false)}>
+          <div className="ios-sheet" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="ios-sheet-group">
+              <p className="ios-sheet-msg">{REPLACE_PROMPT}</p>
+              <button type="button" className="ios-sheet-btn danger" onClick={() => void fillPassword(true)}>
+                바꾸기
+              </button>
+            </div>
+            <div className="ios-sheet-group">
+              <button type="button" className="ios-sheet-btn bold" onClick={() => setConfirmReplace(false)}>
                 취소
               </button>
             </div>

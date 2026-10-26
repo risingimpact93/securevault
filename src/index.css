@@ -1407,3 +1407,32 @@ h3 {
     bottom: calc(12px + env(safe-area-inset-bottom));
   }
 }
+
+/* site icons (0.5.2) */
+.site-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 22%;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1;
+}
+.site-icon.has-icon {
+  background: #fff;
+}
+.site-icon img {
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+}
+.item-row .title .site-icon + span {
+  flex: 1;
+  min-width: 0;
+}
+h2.with-site-icon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

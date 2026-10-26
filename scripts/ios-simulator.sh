@@ -182,6 +182,8 @@ shoot_view 14-settings-dark settings dark
 shoot_view 15-generator-dark generator dark
 shoot_view 16-swipe-dark swipe dark
 shoot_view 17-new-item-dark new dark
+shoot_view 18-replace-confirm-dark replace dark
+shoot_view 24-replace-confirm-light replace light
 shoot_view 20-list-light list light
 shoot_view 21-detail-light detail light
 shoot_view 22-settings-light settings light

@@ -111,8 +111,14 @@ export function useSiteIcon(url: string | undefined) {
     return () => io.disconnect();
   }, [target]);
 
+  const shownFor = useRef("");
   useEffect(() => {
-    setIcon(null);
+    // A new URL clears the old site's icon; a refresh keeps it until the
+    // result arrives (and the native side returns the old icon on failure).
+    if (shownFor.current !== target) {
+      shownFor.current = target;
+      setIcon(null);
+    }
     if (!target || !visible) return;
     let live = true;
     void load(target).then((i) => {
