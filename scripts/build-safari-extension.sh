@@ -27,6 +27,10 @@ xcodebuild -project "$safari/SecureVaultSafari.xcodeproj" -scheme SecureVaultSaf
 app="$build/Build/Products/Release/SecureVault Safari.app"
 codesign --verify --deep --strict "$app"
 codesign -d --entitlements - "$app/Contents/PlugIns/SecureVaultSafariExtension.appex" >/dev/null
+res="$app/Contents/PlugIns/SecureVaultSafariExtension.appex/Contents/Resources"
+for f in manifest.json background.js popup.html lib/logic.js lib/fields.js; do
+  [ -f "$res/$f" ] || { echo "missing $f at appex Resources root" >&2; exit 1; }
+done
 
 # 3. Zip.
 mkdir -p "$out"

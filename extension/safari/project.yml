@@ -39,7 +39,12 @@ targets:
     sources:
       - path: Extension
         excludes: [Resources, Info.plist, Extension.entitlements]
+      # Safari reads manifest.json from the appex's Contents/Resources root, so the
+      # top-level files go in as a group (copied flat) and only lib/ stays a folder.
       - path: Extension/Resources
+        excludes: [lib]
+        buildPhase: resources
+      - path: Extension/Resources/lib
         type: folder
         buildPhase: resources
     settings:
