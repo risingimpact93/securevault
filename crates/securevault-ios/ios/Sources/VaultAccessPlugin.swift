@@ -38,6 +38,13 @@ class VaultAccessPlugin: Plugin {
       webview.scrollView.contentInset = .zero
       webview.scrollView.scrollIndicatorInsets = .zero
       webview.scrollView.bounces = false
+      // The host view controller can leave the web view short of the home
+      // indicator; stretch it to its container so env(safe-area-*) applies.
+      if let container = webview.superview {
+        webview.translatesAutoresizingMaskIntoConstraints = true
+        webview.frame = container.bounds
+        webview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      }
     }
   }
 

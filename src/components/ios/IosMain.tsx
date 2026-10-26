@@ -413,24 +413,8 @@ export default function IosMain(props: Props) {
   const demoApplied = useRef(false);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.classList.add("ios-main");
-    // WKWebView can report a layout viewport that stops above the home
-    // indicator; size the shell to the full screen when the widths match.
-    const fit = () => {
-      const fullScreen = Math.abs(window.screen.width - window.innerWidth) < 2;
-      const h = fullScreen ? Math.max(window.innerHeight, window.screen.height) : window.innerHeight;
-      root.style.setProperty("--ios-shell-h", `${h}px`);
-    };
-    fit();
-    window.addEventListener("resize", fit);
-    window.addEventListener("orientationchange", fit);
-    return () => {
-      window.removeEventListener("resize", fit);
-      window.removeEventListener("orientationchange", fit);
-      root.style.removeProperty("--ios-shell-h");
-      root.classList.remove("ios-main");
-    };
+    document.documentElement.classList.add("ios-main");
+    return () => document.documentElement.classList.remove("ios-main");
   }, []);
 
   const sorted = useMemo(() => [...items].sort(compareItems), [items]);
