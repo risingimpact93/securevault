@@ -681,6 +681,45 @@ struct AppBuild {
     commit: String,
 }
 
+/// Opens a login item's address in the system browser (iOS only; the Mac UI has no open button).
+#[tauri::command]
+async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let full = if lower.starts_with("http://") || lower.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    #[cfg(target_os = "ios")]
+    {
+        securevault_ios::open_url(&app, &full).await
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (app, full);
+        Err("이 플랫폼에서는 주소 열기를 지원하지 않습니다.".to_string())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct DemoView {
+    view: Option<String>,
+    theme: Option<String>,
+}
+
+/// CI screenshots only: which iOS screen and theme the dummy-vault launch shows.
+#[tauri::command]
+fn demo_view() -> Option<DemoView> {
+    if !demo_requested() {
+        return None;
+    }
+    Some(DemoView {
+        view: securevault_core::env_var("DEMO_VIEW"),
+        theme: securevault_core::env_var("DEMO_THEME"),
+    })
+}
+
 #[tauri::command]
 fn client_platform() -> &'static str {
     #[cfg(target_os = "ios")]
@@ -1551,13 +1590,36 @@ fn prepare_demo_inner(app: &AppHandle) -> Result<(), String> {
         vault::create_vault_at(&path, &password).map_err(err)?
     };
     if unlocked.data.items.is_empty() {
-        let mut login = VaultItem::skeleton();
-        login.item_type = "login".to_string();
-        login.title = "예시 메일".to_string();
-        login.username = Some("ada@example.invalid".to_string());
-        login.password = Some("dummy-not-secret".to_string());
-        login.url = Some("https://example.invalid".to_string());
-        login.notes = Some("더미 데이터".to_string());
+        // Dummy data only (example.invalid); enough rows to prove the list scrolls.
+        let logins: [(&str, &str, &str, bool); 12] = [
+            ("예시 메일", "ada@example.invalid", "https://mail.example.invalid", true),
+            ("예시 은행", "dummy-user-01", "https://bank.example.invalid", true),
+            ("예시 쇼핑", "shopper@example.invalid", "https://shop.example.invalid", false),
+            ("예시 클라우드", "cloud@example.invalid", "https://cloud.example.invalid", false),
+            ("예시 코드 저장소", "dev-dummy", "https://code.example.invalid", false),
+            ("예시 메신저", "chat@example.invalid", "https://chat.example.invalid", false),
+            ("예시 동영상", "watch@example.invalid", "https://video.example.invalid", false),
+            ("예시 음악", "music@example.invalid", "https://music.example.invalid", false),
+            ("예시 여행", "travel@example.invalid", "https://travel.example.invalid", false),
+            ("예시 통신사", "010-0000-0000", "https://telecom.example.invalid", false),
+            ("예시 공공기관", "citizen-dummy", "https://gov.example.invalid", false),
+            ("예시 회사 포털", "employee@example.invalid", "https://work.example.invalid", false),
+        ];
+        let mut items = Vec::new();
+        for (index, (title, user, url, favorite)) in logins.iter().enumerate() {
+            let mut login = VaultItem::skeleton();
+            login.item_type = "login".to_string();
+            login.title = title.to_string();
+            login.username = Some(user.to_string());
+            login.password = Some(format!("dummy-not-secret-{index:02}"));
+            login.url = Some(url.to_string());
+            login.favorite = *favorite;
+            if index == 0 {
+                login.notes = Some("더미 데이터. 실제 계정이 아닙니다.".to_string());
+                login.tags = vec!["예시".to_string()];
+            }
+            items.push(login);
+        }
         let mut card = VaultItem::skeleton();
         card.item_type = "card".to_string();
         card.title = "예시 카드".to_string();
@@ -1566,11 +1628,13 @@ fn prepare_demo_inner(app: &AppHandle) -> Result<(), String> {
         card.expiry = Some("01/30".to_string());
         card.cvv = Some("000".to_string());
         card.notes = Some("더미 데이터".to_string());
+        items.push(card);
         let mut note = VaultItem::skeleton();
         note.item_type = "note".to_string();
         note.title = "예시 메모".to_string();
         note.notes = Some("더미 데이터. 실제 비밀이 아닙니다.".to_string());
-        for item in [login, card, note] {
+        items.push(note);
+        for item in items {
             sync::insert_new(&mut unlocked.data, item, &local.device_id);
         }
     }
@@ -1601,6 +1665,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ios_plugin_status,
+            open_external_url,
+            demo_view,
             vault_exists,
             discover_vaults,
             open_existing_vault,

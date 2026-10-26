@@ -163,6 +163,30 @@ xcrun simctl io "$UDID" screenshot "$SCREEN_DIR/02-demo-entries.png"
 sleep 10
 xcrun simctl io "$UDID" screenshot "$SCREEN_DIR/03-demo-entries-later.png" || true
 
+# 0.5.0 iOS UI: one relaunch per view, dummy vault only.
+xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 || true
+shoot_view() {
+  name="$1"; view="$2"; theme="$3"; wait="${4:-14}"
+  xcrun simctl terminate "$UDID" "$BUNDLE" || true
+  sleep 2
+  SIMCTL_CHILD_SECUREVAULT_DEMO=1 SIMCTL_CHILD_SECUREVAULT_DEMO_VIEW="$view" SIMCTL_CHILD_SECUREVAULT_DEMO_THEME="$theme" \
+    xcrun simctl launch "$UDID" "$BUNDLE" || true
+  sleep "$wait"
+  xcrun simctl io "$UDID" screenshot "$SCREEN_DIR/$name.png" || echo "screenshot $name failed"
+}
+shoot_view 10-list-dark list dark 18
+shoot_view 11-list-scrolled scrolled dark
+shoot_view 12-detail-dark detail dark
+shoot_view 13-edit-dark edit dark
+shoot_view 14-settings-dark settings dark
+shoot_view 15-generator-dark generator dark
+shoot_view 16-swipe-dark swipe dark
+shoot_view 17-new-item-dark new dark
+shoot_view 20-list-light list light
+shoot_view 21-detail-light detail light
+shoot_view 22-settings-light settings light
+shoot_view 23-edit-light edit light
+
 if [ ! -s "$SCREEN_DIR/01-launch.png" ] || [ ! -s "$SCREEN_DIR/02-demo-entries.png" ]; then
   echo "Screenshots are missing." >&2
   exit 1

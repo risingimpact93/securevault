@@ -943,3 +943,28 @@ export async function respondMcpApproval(requestId: string, approved: boolean): 
     body: JSON.stringify({ approved }),
   });
 }
+
+/** iOS: open a login item's address in Safari via the vault-access plugin. */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("open_external_url", { url });
+    return;
+  }
+  const full = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+  window.open(full, "_blank", "noopener,noreferrer");
+}
+
+export interface DemoView {
+  view?: string | null;
+  theme?: string | null;
+}
+
+/** CI screenshots: the dummy-vault launch may ask for a specific iOS screen. */
+export async function demoView(): Promise<DemoView | null> {
+  if (!isTauri()) return null;
+  try {
+    return (await invoke<DemoView | null>("demo_view")) ?? null;
+  } catch {
+    return null;
+  }
+}

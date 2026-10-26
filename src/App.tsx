@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   biometricUnlock,
+  clientPlatform,
   createVault,
+  demoView,
   getPendingApprovals,
   getSession,
   getVaultSettings,
@@ -9,6 +11,7 @@ import {
   listItems,
   idleLock,
   lock,
+  looksLikeIos,
   mapError,
   respondMcpApproval,
   secretKeyStatus,
@@ -19,6 +22,7 @@ import {
 } from "./api";
 import ApprovalModal, { DEMO_APPROVAL } from "./components/ApprovalModal";
 import MainScreen from "./components/MainScreen";
+import IosMain, { type IosDemo } from "./components/ios/IosMain";
 import SecretKeyScreen from "./components/SecretKeyScreen";
 import SetupScreen from "./components/SetupScreen";
 import UnlockScreen from "./components/UnlockScreen";
@@ -44,6 +48,10 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [demoDismissed, setDemoDismissed] = useState(false);
   const [pendingSecretKey, setPendingSecretKey] = useState("");
+  // iPhone app (or the web UI opened on an iPhone) gets the native-style shell.
+  // The Mac app reports "macos" and always keeps MainScreen.
+  const [iosUi, setIosUi] = useState(looksLikeIos);
+  const [demo, setDemo] = useState<IosDemo | null>(null);
   const toastSeq = useRef(1);
   const seenGeneration = useRef<number | null>(null);
   const idleTimer = useRef<number | null>(null);
@@ -57,6 +65,26 @@ export default function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void clientPlatform().then((platform) => {
+      if (cancelled) return;
+      setIosUi(platform === "ios" || (platform === "web" && looksLikeIos()));
+    });
+    void demoView().then((d) => {
+      if (cancelled || !d) return;
+      if (d.theme === "light" || d.theme === "dark") setTheme(d.theme);
+      setDemo({ view: d.view ?? null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("ios-ui", iosUi);
+  }, [iosUi]);
 
   const pushToast = useCallback((toast: Omit<Toast, "id">) => {
     const id = toastSeq.current;
@@ -397,7 +425,23 @@ export default function App() {
         />
       ) : null}
       {screen === "unlock" ? <UnlockScreen onUnlock={handleUnlock} onBiometric={handleBiometric} /> : null}
-      {screen === "main" ? (
+      {screen === "main" && iosUi ? (
+        <IosMain
+          items={items}
+          theme={theme}
+          settings={settings}
+          demo={demo}
+          onReload={reloadItems}
+          onLock={handleLock}
+          onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          onSettingsChange={setSettings}
+          onToast={pushToast}
+          syncStatus={syncStatus}
+          onSyncStatus={setSyncStatus}
+          onRequireUnlock={showUnlock}
+        />
+      ) : null}
+      {screen === "main" && !iosUi ? (
         <MainScreen
           items={items}
           theme={theme}

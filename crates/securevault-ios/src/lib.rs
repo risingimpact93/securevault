@@ -83,6 +83,21 @@ pub async fn ping<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PluginPing, S
         .map_err(|err| format!("vault-access 플러그인이 응답하지 않습니다: {err}"))
 }
 
+/// Opens an http(s) URL with UIApplication.open (async: the plugin hops to main).
+#[cfg(target_os = "ios")]
+pub async fn open_url<R: Runtime>(app: &tauri::AppHandle<R>, url: &str) -> Result<(), String> {
+    #[derive(serde::Serialize)]
+    struct Args<'a> {
+        url: &'a str,
+    }
+    let handle = app.state::<VaultAccess<R>>().handle.clone();
+    handle
+        .run_mobile_plugin_async::<serde::de::IgnoredAny>("openUrl", Args { url })
+        .await
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
 /// Result of a scoped read/write/stat. `bookmark` is set when iOS reported the
 /// stored bookmark as stale and a fresh one was made.
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -195,6 +195,27 @@ class VaultAccessPlugin: Plugin {
   }
 
   /// Make a bookmark for a file inside the app (CI self-test and adopt path).
+  /// Opens an http(s) address from a login item in the system browser.
+  @objc public func openUrl(_ invoke: Invoke) throws {
+    struct Args: Decodable { let url: String }
+    let args = try invoke.parseArgs(Args.self)
+    guard let url = URL(string: args.url),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https" else {
+      invoke.reject("열 수 없는 주소입니다.")
+      return
+    }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url, options: [:]) { ok in
+        if ok {
+          invoke.resolve(["ok": true])
+        } else {
+          invoke.reject("주소를 열지 못했습니다.")
+        }
+      }
+    }
+  }
+
   @objc public func makeBookmark(_ invoke: Invoke) throws {
     struct Args: Decodable { let path: String }
     do {
