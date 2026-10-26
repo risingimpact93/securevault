@@ -981,3 +981,26 @@ export async function clearSiteIcons(): Promise<void> {
   if (!isTauri()) return;
   await invoke("clear_site_icons");
 }
+
+export type AutofillStatus = {
+  supported: boolean;
+  enabled: boolean;
+  listening: boolean;
+  hostInstalled: boolean;
+  extensionId: string;
+  manifestPath: string | null;
+};
+
+/** Browser extension bridge (desktop app only; the web build has none). */
+export async function autofillGetStatus(): Promise<AutofillStatus | null> {
+  if (!isTauri()) return null;
+  return invoke<AutofillStatus>("autofill_get_status");
+}
+
+export async function autofillSetEnabled(enabled: boolean): Promise<AutofillStatus> {
+  return invoke<AutofillStatus>("autofill_set_enabled", { enabled });
+}
+
+export async function autofillInstallHost(): Promise<AutofillStatus> {
+  return invoke<AutofillStatus>("autofill_install_host");
+}

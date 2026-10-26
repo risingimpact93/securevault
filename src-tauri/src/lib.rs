@@ -1,3 +1,4 @@
+mod autofill_host;
 mod ios_access;
 #[cfg(target_os = "ios")]
 mod ios_bookmark;
@@ -1659,6 +1660,11 @@ fn prepare_demo_inner(app: &AppHandle) -> Result<(), String> {
     accept_password_unlock(app, &state, unlocked)
 }
 
+/// Chrome starts native messaging hosts with the caller origin as argv[1].
+pub fn run_native_host(caller_origin: &str) -> i32 {
+    autofill_host::run_native_host(caller_origin)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -1738,6 +1744,9 @@ pub fn run() {
             mcp_host::mcp_revoke_token,
             mcp_host::mcp_access_log,
             mcp_host::respond_mcp_approval,
+            autofill_host::autofill_get_status,
+            autofill_host::autofill_set_enabled,
+            autofill_host::autofill_install_host,
         ])
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
@@ -1758,6 +1767,10 @@ pub fn run() {
             #[cfg(not(target_os = "ios"))]
             if let Err(err) = mcp_host::install(app.handle()) {
                 eprintln!("securevault mcp: {err}");
+            }
+            #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+            if let Err(err) = autofill_host::install(app.handle()) {
+                eprintln!("securevault autofill: {err}");
             }
             Ok(())
         })

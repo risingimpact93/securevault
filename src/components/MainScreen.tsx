@@ -51,6 +51,7 @@ import BuildStamp from "./BuildStamp";
 import EmergencyKit from "./EmergencyKit";
 import Logo from "./Logo";
 import McpSettings from "./McpSettings";
+import BrowserExtensionSettings from "./BrowserExtensionSettings";
 import SyncSettings from "./SyncSettings";
 
 const FILTERS: { id: FilterId; label: string }[] = [
@@ -1652,6 +1653,7 @@ export function SettingsPanel({
         </button>
       </form>
       {ios ? null : <McpSettings onToast={onToast} />}
+      {ios ? null : <BrowserExtensionSettings onToast={onToast} />}
       <BuildStamp />
     </div>
   );

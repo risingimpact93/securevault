@@ -18,3 +18,4 @@ data/
 *token*.txt
 *.rej
 *.orig
+dist-extension

@@ -47,6 +47,8 @@ security-framework = { version = "=3.5.1", features = ["OSX_10_13"] }
 security-framework = { version = "=3.5.1", default-features = false }
 objc2 = "=0.6.4"
 objc2-foundation = { version = "=0.3.2", features = ["NSString"] }
+
+[target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
 
 [dev-dependencies]

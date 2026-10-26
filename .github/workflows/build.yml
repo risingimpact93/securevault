@@ -21,6 +21,9 @@ jobs:
       - run: cargo build --release -p securevault-web
       - uses: actions/upload-artifact@v4
         with: { name: securevault-web-linux-x64, path: target/release/securevault-web }
+      - run: bash scripts/build-chrome-extension.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: securevault-chrome-extension, path: dist-extension/securevault-chrome-extension-*.zip }
 
   macos-app:
     runs-on: macos-14

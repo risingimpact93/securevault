@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "SecureVault",
+  "version": "0.6.0",
+  "description": "SecureVault 데스크톱 앱의 로그인 정보를 현재 사이트에 채웁니다.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzlwaTIIV1mMiFYYSxqSrWmiJlqtq7W46AvbnGtkXZBUsHpsVBpqpeeCookgy2TzSHrjNe6UcG/SZc1CJCYa2MT7gP5l+qR5sg5cbT0ZPuRlLrGAoysupKlAOTiicWbuKNfJmfbLSAXoWV+TWxI61tFzrghnoXtXs5hfkQJwXku2TOEbIiFAudkm8TOeq/DiwbmFspqKh/hL7JmmxrfpB701W45jNmmm7otmUsWyM4yBM76PoQTFDnLZIYYnwYZ5cYpD/PEvlQk7uOsi7Rt2ChAUa+LWTftH0KnZlJh+SN438SKq7egIYUCqxn11bakkQ4ZQM2cww60b3lsrIYD4HxwIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["nativeMessaging", "activeTab", "scripting"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "SecureVault" },
+  "commands": {
+    "fill-exact": {
+      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "description": "정확히 일치하는 로그인 채우기"
+    }
+  },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+}
