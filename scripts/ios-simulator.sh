@@ -2,6 +2,8 @@
 # Unsigned iOS simulator build, boot, and screenshots.
 # Runs on the macOS GitHub runner. Linux can syntax-check this file with `sh -n`.
 set -eu
+# FORCE_COLOR=0 makes `tauri ios init` write "0 ${ARCHS:?}" into the Xcode build phase.
+unset FORCE_COLOR NO_COLOR CLICOLOR_FORCE 2>/dev/null || true
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -19,6 +21,12 @@ EXISTING=$(find src-tauri/gen/apple -name '*.xcodeproj' 2>/dev/null | head -n 1 
 if [ ! -d src-tauri/gen/apple ] || [ -z "$EXISTING" ]; then
   echo "Generating the Xcode project (src-tauri/gen/apple is not committed)."
   npx tauri ios init --ci --skip-targets-install
+fi
+
+sh scripts/ios-prepare.sh
+if grep -Eq '(^|[^0-9A-Za-z_])0 *\$\{ARCHS' src-tauri/gen/apple/project.yml 2>/dev/null; then
+  echo "Stray 0 before ARCHS is still present." >&2
+  exit 1
 fi
 
 PROJ=$(find src-tauri/gen/apple -name '*.xcodeproj' -print | head -n 1)
@@ -56,6 +64,17 @@ if [ -z "$APP" ] || [ ! -d "$APP" ]; then
   exit 1
 fi
 echo "Simulator app: $APP"
+
+# Icons must be compiled into the bundle (blank home-screen icon in 0.4.0).
+if [ ! -s "$APP/Assets.car" ]; then
+  echo "Assets.car is missing from $APP; the AppIcon set was not compiled." >&2
+  exit 1
+fi
+if ! /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$APP/Info.plist"; then
+  echo "CFBundleIcons is missing from Info.plist." >&2
+  exit 1
+fi
+ls -la "$APP/Assets.car" "$APP"/AppIcon*.png 2>/dev/null || true
 
 BUNDLE=com.securevault.ios
 if [ -f "$APP/Info.plist" ]; then
@@ -112,7 +131,24 @@ xcrun simctl install "$UDID" "$APP"
 xcrun simctl launch "$UDID" "$BUNDLE" || true
 sleep 15
 xcrun simctl io "$UDID" screenshot "$SCREEN_DIR/01-launch.png"
+
+# The launch screen calls ios_plugin_status, which pings the Swift
+# vault-access plugin and writes a marker into the app data directory.
+DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
+MARKER=$(find "$DATA" -name plugin-status.txt 2>/dev/null | head -n 1 || true)
+if [ -z "$MARKER" ]; then
+  echo "plugin-status.txt was not written; ios_plugin_status did not run." >&2
+  exit 1
+fi
+echo "vault-access plugin status: $(cat "$MARKER")"
+cp "$MARKER" "$OUT/plugin-status.txt"
+if ! grep -q '^ok vault-access' "$MARKER"; then
+  echo "The vault-access plugin is not registered or did not answer." >&2
+  exit 1
+fi
 xcrun simctl terminate "$UDID" "$BUNDLE" || true
+sleep 4
+xcrun simctl io "$UDID" screenshot "$SCREEN_DIR/00-home-screen.png" || true
 
 # Dummy vault only. The app reads SECUREVAULT_DEMO (simctl strips SIMCTL_CHILD_).
 SIMCTL_CHILD_SECUREVAULT_DEMO=1 xcrun simctl launch "$UDID" "$BUNDLE" || true

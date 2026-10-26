@@ -724,7 +724,34 @@ fn store_picked_vault(app: &AppHandle, path: &Path, bookmark: &str) -> Result<St
 }
 
 #[tauri::command]
-fn pick_ios_vault(app: AppHandle) -> Result<Option<String>, String> {
+async fn ios_plugin_status(app: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "ios")]
+    {
+        let result = match securevault_ios::ping(&app).await {
+            Ok(ping) if ping.ok => Ok(ping.plugin),
+            Ok(_) => Err("vault-access 플러그인이 ok를 돌려주지 않았습니다.".to_string()),
+            Err(err) => Err(err),
+        };
+        // CI reads this marker from the simulator app container.
+        if let Ok(local) = ensure_local(&app) {
+            let line = match &result {
+                Ok(name) => format!("ok {name}\n"),
+                Err(err) => format!("error {err}\n"),
+            };
+            let _ = std::fs::create_dir_all(&local.data_dir);
+            let _ = std::fs::write(local.data_dir.join("plugin-status.txt"), line);
+        }
+        return result;
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = app;
+        Ok("desktop".into())
+    }
+}
+
+#[tauri::command]
+async fn pick_ios_vault(app: AppHandle) -> Result<Option<String>, String> {
     #[cfg(not(target_os = "ios"))]
     {
         let _ = app;
@@ -732,7 +759,7 @@ fn pick_ios_vault(app: AppHandle) -> Result<Option<String>, String> {
     }
     #[cfg(target_os = "ios")]
     {
-        let picked = securevault_ios::pick(&app)?;
+        let picked = securevault_ios::pick(&app).await?;
         if picked.cancelled || picked.path.trim().is_empty() {
             return Ok(None);
         }
@@ -1558,6 +1585,7 @@ pub fn run() {
             generation: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
+            ios_plugin_status,
             vault_exists,
             discover_vaults,
             open_existing_vault,

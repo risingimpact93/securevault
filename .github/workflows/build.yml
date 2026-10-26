@@ -79,7 +79,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: securevault-ios-screenshots
-          path: src-tauri/gen/apple/ci-out/screenshots/*.png
+          path: |
+            src-tauri/gen/apple/ci-out/screenshots/*.png
+            src-tauri/gen/apple/ci-out/plugin-status.txt
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

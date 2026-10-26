@@ -51,6 +51,11 @@ export async function clientPlatform(): Promise<ClientPlatform> {
   return looksLikeIos() ? "ios" : "unsupported";
 }
 
+/** iOS: resolves when the Swift vault-access plugin answers. */
+export async function iosPluginStatus(): Promise<string> {
+  return invoke<string>("ios_plugin_status");
+}
+
 export async function scanSecretKeyQr(): Promise<string> {
   const scanner = await import("@tauri-apps/plugin-barcode-scanner");
   let permission = await scanner.checkPermissions();
@@ -820,11 +825,13 @@ export async function mergeSyncPassword(path: string, password: string): Promise
 export async function pickVaultFile(mode: VaultLocationMode): Promise<string | null> {
   if (!isTauri()) return null;
   if (mode !== "move" && (await clientPlatform()) === "ios") {
+    // No fallback to the dialog plugin: on iOS it is not the vault picker and
+    // a silent fallback hid real failures. Errors go to the screen.
     try {
-      const picked = await invoke<string | null>("pick_ios_vault");
-      return picked;
-    } catch {
-      /* The open-mode picker failed. A cancel returns null and does not land here. */
+      return await invoke<string | null>("pick_ios_vault");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(message || "문서 선택기를 열지 못했습니다.");
     }
   }
   if (mode === "move") {

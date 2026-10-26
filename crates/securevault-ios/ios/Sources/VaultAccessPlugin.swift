@@ -16,10 +16,35 @@ class VaultAccessPlugin: Plugin {
   private var picker: UIDocumentPickerViewController?
   private var pending: Invoke?
 
+  /// CI and the app call this to prove the Swift plugin is registered.
+  @objc public func ping(_ invoke: Invoke) throws {
+    invoke.resolve(["ok": true, "plugin": "vault-access"])
+  }
+
   @objc public func pickVault(_ invoke: Invoke) throws {
-    DispatchQueue.main.async {
-      self.present(invoke)
+    if Thread.isMainThread {
+      present(invoke)
+    } else {
+      DispatchQueue.main.async {
+        self.present(invoke)
+      }
     }
+  }
+
+  /// The webview controller may already be presenting (e.g. a sheet); walk to the top.
+  private func topViewController() -> UIViewController? {
+    var root = manager.viewController
+    if root == nil {
+      root = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap { $0.windows }
+        .first { $0.isKeyWindow }?.rootViewController
+    }
+    var top = root
+    while let next = top?.presentedViewController, !next.isBeingDismissed {
+      top = next
+    }
+    return top
   }
 
   private func present(_ invoke: Invoke) {
@@ -28,12 +53,16 @@ class VaultAccessPlugin: Plugin {
     picker.allowsMultipleSelection = false
     picker.shouldShowFileExtensions = true
     picker.delegate = self
-    self.picker = picker
-    self.pending = invoke
-    guard let host = manager.viewController else {
-      finish(invoke, result: nil, error: "화면을 찾지 못했습니다.")
+    if pending != nil {
+      invoke.reject("문서 선택기가 이미 열려 있습니다.")
       return
     }
+    guard let host = topViewController() else {
+      invoke.reject("문서 선택기를 띄울 화면을 찾지 못했습니다.")
+      return
+    }
+    self.picker = picker
+    self.pending = invoke
     host.present(picker, animated: true)
   }
 
@@ -72,10 +101,16 @@ extension VaultAccessPlugin: UIDocumentPickerDelegate {
       finish(pending, result: PickResult(path: "", bookmark: "", cancelled: true, copied: false), error: nil)
       return
     }
+    // Keep the scope open for this process (Rust reads/writes the path).
+    // On the next launch Rust resolves the bookmark and starts access again.
     let started = url.startAccessingSecurityScopedResource()
-    // Leave the scope open for this process. Rust resolves the bookmark again
-    // on the next launch and holds that URL.
-    _ = started
+    // Coordinate with iCloud so a not-yet-downloaded file is materialized first.
+    var coordError: NSError?
+    NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordError) { _ in }
+    if let coordError = coordError, !started {
+      finish(pending, result: nil, error: "금고 파일에 접근하지 못했습니다: \(coordError.localizedDescription)")
+      return
+    }
     do {
       let data = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
       finish(

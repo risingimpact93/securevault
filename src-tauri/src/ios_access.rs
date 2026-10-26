@@ -51,7 +51,16 @@ pub fn restore(dir: &Path) -> Option<PathBuf> {
     let record = load_record(dir)?;
     #[cfg(target_os = "ios")]
     if !record.bookmark.trim().is_empty() {
-        if let Some(path) = crate::ios_bookmark::resolve_bookmark(&record.bookmark) {
+        if let Some((path, refreshed)) = crate::ios_bookmark::resolve_bookmark(&record.bookmark) {
+            if let Some(bookmark) = refreshed {
+                let _ = save_record(
+                    dir,
+                    &VaultAccessRecord {
+                        path: path.display().to_string(),
+                        bookmark,
+                    },
+                );
+            }
             return Some(path);
         }
     }

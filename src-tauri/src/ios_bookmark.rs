@@ -38,8 +38,9 @@ pub fn create_bookmark(path: &std::path::Path) -> Option<String> {
 }
 
 /// Resolve bookmark data, start security-scoped access, and leak the URL so the
-/// scope stays alive until the process exits.
-pub fn resolve_bookmark(bookmark_b64: &str) -> Option<PathBuf> {
+/// scope stays alive until the process exits. When iOS reports the bookmark as
+/// stale (file moved or renamed by iCloud), a fresh bookmark is returned too.
+pub fn resolve_bookmark(bookmark_b64: &str) -> Option<(PathBuf, Option<String>)> {
     let bytes = STANDARD.decode(bookmark_b64.trim()).ok()?;
     if bytes.is_empty() {
         return None;
@@ -56,11 +57,22 @@ pub fn resolve_bookmark(bookmark_b64: &str) -> Option<PathBuf> {
         .ok()?
     };
     let _started = unsafe { url.startAccessingSecurityScopedResource() };
+    let refreshed = if stale.as_bool() {
+        url.bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::MinimalBookmark,
+            None,
+            None,
+        )
+        .ok()
+        .map(|data| STANDARD.encode(nsdata_to_vec(&data)))
+    } else {
+        None
+    };
     let path = url.path().map(|value| value.to_string()).unwrap_or_default();
     forget(url);
     if path.is_empty() {
         None
     } else {
-        Some(PathBuf::from(path))
+        Some((PathBuf::from(path), refreshed))
     }
 }

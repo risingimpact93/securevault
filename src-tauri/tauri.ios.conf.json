@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SecureVault",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.securevault.ios",
   "app": {
     "windows": [
@@ -20,5 +20,8 @@
       "minimumSystemVersion": "15.0",
       "infoPlist": "Info.ios.plist"
     }
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build && sh scripts/ios-prepare.sh"
   }
 }

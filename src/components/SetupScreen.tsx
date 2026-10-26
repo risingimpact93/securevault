@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  clientPlatform,
   discoverVaults,
+  iosPluginStatus,
   isTauri,
   mapError,
   openExistingVault,
@@ -50,6 +52,25 @@ export default function SetupScreen({
   const cancelRef = useRef(false);
   const discoverRef = useRef<Promise<DiscoveredVault[]>>(Promise.resolve([]));
   const desktop = isTauri();
+
+  useEffect(() => {
+    // iOS: check that the Swift document-picker plugin is wired; show failures.
+    let cancelled = false;
+    if (!isTauri()) return;
+    void clientPlatform().then(async (platform) => {
+      if (platform !== "ios") return;
+      try {
+        await iosPluginStatus();
+      } catch (err) {
+        if (!cancelled) {
+          setError(`파일 접근 플러그인 오류: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
