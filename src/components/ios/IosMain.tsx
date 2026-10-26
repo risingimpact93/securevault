@@ -21,6 +21,7 @@ import type {
 } from "../../types";
 import EmergencyKit from "../EmergencyKit";
 import { SettingsPanel } from "../MainScreen";
+import { clearSiteIconCache, refreshSiteIcons, setSiteIconsEnabled, useSiteIcon, useSiteIconsEnabled } from "../../siteIcons";
 
 /* iOS-only shell (iPhone app, or the web UI opened on an iPhone).
    The Mac/desktop layout lives in MainScreen and is not touched by this file. */
@@ -202,18 +203,24 @@ const IconCopy = () => (
 
 /* ---------- small building blocks ---------- */
 
-function Avatar({ item, size = 40 }: { item: Pick<VaultItem, "title" | "itemType">; size?: number }) {
+function Avatar({ item, size = 40 }: { item: Pick<VaultItem, "title" | "itemType" | "url">; size?: number }) {
+  const { ref, icon } = useSiteIcon(item.itemType === "login" ? item.url : undefined);
+  const [broken, setBroken] = useState<string | null>(null);
   const title = item.title.trim();
   let hash = 0;
   for (const ch of title) hash = (hash * 31 + ch.codePointAt(0)!) % 360;
   const letter = title.replace(/^예시\s*/, "").charAt(0) || title.charAt(0) || "?";
   return (
     <span
-      className="ios-avatar"
+      ref={ref}
+      className={`ios-avatar${icon && broken !== icon ? " has-icon" : ""}`}
       style={{ width: size, height: size, fontSize: size * 0.45, background: `hsl(${hash} 42% 42%)` }}
       aria-hidden="true"
     >
       {item.itemType === "card" ? "▭" : item.itemType === "note" ? "✎" : letter.toUpperCase()}
+      {icon && broken !== icon ? (
+        <img className="ios-avatar-icon" src={icon} alt="" draggable={false} onError={() => setBroken(icon)} />
+      ) : null}
     </span>
   );
 }
@@ -262,6 +269,44 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
     >
       <span className="knob" />
     </button>
+  );
+}
+
+function SiteIconSettings({ onToast }: { onToast: (toast: Omit<Toast, "id">) => void }) {
+  const on = useSiteIconsEnabled();
+  return (
+    <Group
+      header="사이트 아이콘"
+      footer="켜 두면 로그인 항목의 사이트 주소에서만 아이콘을 직접 받아옵니다(HTTPS, 외부 아이콘 서비스 사용 안 함). 비밀번호나 항목 내용은 전송하지 않으며, 아이콘은 7일 동안 기기에 보관됩니다."
+    >
+      <div className="ios-row ios-input-row">
+        <span className="ios-input-label grow">사이트 아이콘 표시</span>
+        <Switch checked={on} label="사이트 아이콘 표시" onChange={setSiteIconsEnabled} />
+      </div>
+      {on ? (
+        <button
+          type="button"
+          className="ios-row ios-action-row"
+          onClick={() => {
+            refreshSiteIcons(true);
+            onToast({ kind: "ok", message: "아이콘을 새로 받아옵니다" });
+          }}
+        >
+          아이콘 새로 고침
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="ios-row ios-action-row"
+        onClick={() => {
+          clearSiteIconCache()
+            .then(() => onToast({ kind: "ok", message: "아이콘 캐시를 지웠습니다" }))
+            .catch((e) => onToast({ kind: "err", message: String(e) }));
+        }}
+      >
+        아이콘 캐시 지우기
+      </button>
+    </Group>
   );
 }
 
@@ -1232,6 +1277,7 @@ function SettingsPage({
           />
         </div>
       </Group>
+      <SiteIconSettings onToast={onToast} />
       <Group footer={`자동 잠금: ${settings.autoLockMinutes}분 동안 조작이 없으면 잠급니다. 아래에서 바꿀 수 있습니다.`}>
         <button type="button" className="ios-row ios-action-row" onClick={() => void onLock()}>
           지금 잠그기

@@ -968,3 +968,16 @@ export async function demoView(): Promise<DemoView | null> {
     return null;
   }
 }
+
+/** Site icon for an entry URL as a data URL, fetched by the native side from
+ *  that site's own HTTPS origin (cached 7 days in the app data dir). The web
+ *  build never fetches icons. */
+export async function siteIcon(url: string, force = false): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("site_icon", { url, force });
+}
+
+export async function clearSiteIcons(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("clear_site_icons");
+}

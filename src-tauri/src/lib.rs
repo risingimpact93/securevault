@@ -5,6 +5,7 @@ mod ios_bookmark;
 mod ios_vault_io;
 mod mcp_host;
 mod platform;
+mod site_icons;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -700,6 +701,20 @@ async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
         let _ = (app, full);
         Err("이 플랫폼에서는 주소 열기를 지원하지 않습니다.".to_string())
     }
+}
+
+/// Site icon for an entry URL (data URL), fetched live from that site's own
+/// HTTPS origin and cached in the app data dir with a 7-day TTL.
+#[tauri::command]
+async fn site_icon(app: AppHandle, url: String, force: Option<bool>) -> Result<Option<String>, String> {
+    let local = ensure_local(&app)?;
+    Ok(site_icons::site_icon(local.data_dir, &url, force.unwrap_or(false), demo_requested()).await)
+}
+
+#[tauri::command]
+fn clear_site_icons(app: AppHandle) -> Result<(), String> {
+    let local = ensure_local(&app)?;
+    site_icons::clear(&local.data_dir)
 }
 
 #[derive(serde::Serialize)]
@@ -1666,6 +1681,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ios_plugin_status,
             open_external_url,
+            site_icon,
+            clear_site_icons,
             demo_view,
             vault_exists,
             discover_vaults,

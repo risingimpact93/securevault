@@ -977,3 +977,19 @@ html.ios-main[data-theme="light"],
 html.ios-main[data-theme="light"] body {
   background: #f9f9f9;
 }
+
+.ios-avatar {
+  position: relative;
+  overflow: hidden;
+}
+.ios-avatar.has-icon {
+  background: #ffffff !important;
+  color: transparent;
+}
+.ios-avatar-icon {
+  position: absolute;
+  inset: 12%;
+  width: 76%;
+  height: 76%;
+  object-fit: contain;
+}
