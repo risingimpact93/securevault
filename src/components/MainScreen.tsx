@@ -17,6 +17,7 @@ import {
   disableSecretKey,
   enableSecretKey,
   handoverManager,
+  verifyMasterPassword,
   exportVault,
   generatePassword,
   getVaultSettings,
@@ -1036,6 +1037,7 @@ export function SettingsPanel({
   const [claimPassword, setClaimPassword] = useState("");
   const [claimKey, setClaimKey] = useState("");
   const [handoverId, setHandoverId] = useState("");
+  const [handoverPassword, setHandoverPassword] = useState("");
   const [ios, setIos] = useState(looksLikeIos);
 
   useEffect(() => {
@@ -1240,9 +1242,17 @@ export function SettingsPanel({
       onToast({ kind: "err", message: "넘길 기기를 선택하세요." });
       return;
     }
+    if (ios && !handoverPassword) {
+      onToast({ kind: "err", message: "마스터 비밀번호를 입력하세요." });
+      return;
+    }
     setSkBusy(true);
     try {
+      if (ios) {
+        await verifyMasterPassword(handoverPassword);
+      }
       rememberDevice(await handoverManager(handoverId));
+      setHandoverPassword("");
       onToast({ kind: "ok", message: "관리 기기를 넘겼습니다." });
     } catch (err) {
       onToast({ kind: "err", message: mapError(err instanceof Error ? err.message : String(err)) });
@@ -1418,6 +1428,17 @@ export function SettingsPanel({
                 ))}
               </select>
             </label>
+            {ios ? (
+              <label className="field">
+                <span>마스터 비밀번호</span>
+                <input
+                  type="password"
+                  value={handoverPassword}
+                  onChange={(e) => setHandoverPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+            ) : null}
             <button className="btn" type="submit" disabled={skBusy || otherDevices.length === 0}>
               관리 기기 넘기기
             </button>

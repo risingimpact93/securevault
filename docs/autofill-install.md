@@ -1,4 +1,4 @@
-# SecureVault 브라우저 자동 채우기 설치 안내 (v0.6.0, Mac)
+# SecureVault 브라우저 자동 채우기 설치 안내 (v0.6.1, Mac)
 
 성빈 님의 Mac mini와 MacBook에서 각각 아래 순서대로 한 번씩 진행합니다. 두 Mac의 순서는 같습니다.
 모든 빌드는 개인용 테스트 빌드입니다. 웹 스토어, 공증(notarization), 배포는 하지 않습니다.
@@ -7,15 +7,15 @@
 
 | 아티팩트 이름 | 내용 |
 | --- | --- |
-| `securevault-macos-arm64-dmg` | SecureVault 앱 DMG (`SecureVault_0.6.0_aarch64.dmg`) |
-| `securevault-chrome-extension` | `securevault-chrome-extension-0.6.0.zip` (Chrome 압축해제 로드용) |
-| `securevault-safari-extension` | `securevault-safari-extension-0.6.0.zip` (`SecureVault Safari.app`, ad-hoc 서명) |
+| `securevault-macos-arm64-dmg` | SecureVault 앱 DMG (`SecureVault_0.6.1_aarch64.dmg`) |
+| `securevault-chrome-extension` | `securevault-chrome-extension-0.6.1.zip` (Chrome 압축해제 로드용) |
+| `securevault-safari-extension` | `securevault-safari-extension-0.6.1.zip` (`SecureVault Safari.app`, ad-hoc 서명) |
 
 > 현재 GitHub 결제 문제로 CI가 실행되지 않아 아티팩트가 아직 없습니다. 결제가 해결되면 main의 최신 실행에서 받습니다.
 
 ## 1. SecureVault 앱 설치
 
-1. `SecureVault_0.6.0_aarch64.dmg`를 열고 `SecureVault.app`을 **응용 프로그램** 폴더로 끌어 놓습니다.
+1. `SecureVault_0.6.1_aarch64.dmg`를 열고 `SecureVault.app`을 **응용 프로그램** 폴더로 끌어 놓습니다.
    - DMG 안에서 바로 실행한 상태로는 Chrome 호스트 설치가 거부됩니다. 반드시 응용 프로그램 폴더로 옮겨 주세요.
 2. 서명/공증되지 않은 빌드라면 처음 한 번은 Finder에서 앱을 **Control-클릭 → 열기**로 실행합니다.
    (막히면 시스템 설정 → 개인정보 보호 및 보안 → "확인 없이 열기")
@@ -37,8 +37,8 @@
 
 ## 4. Chrome 확장 설치 (개발자 모드, 압축해제 로드)
 
-1. `securevault-chrome-extension-0.6.0.zip`의 압축을 풉니다. 지우지 않을 위치에 두세요
-   (예: `~/Applications/SecureVault/securevault-chrome-extension-0.6.0`). 폴더를 지우면 확장도 동작하지 않습니다.
+1. `securevault-chrome-extension-0.6.1.zip`의 압축을 풉니다. 지우지 않을 위치에 두세요
+   (예: `~/Applications/SecureVault/securevault-chrome-extension-0.6.1`). 폴더를 지우면 확장도 동작하지 않습니다.
 2. Chrome 주소창에 `chrome://extensions`를 입력합니다.
 3. 오른쪽 위 **개발자 모드**를 켭니다.
 4. **압축해제된 확장 프로그램을 로드합니다**를 누르고, 압축을 푼 폴더(안에 `manifest.json`이 있는 폴더)를 고릅니다.
@@ -48,7 +48,7 @@
 
 ## 5. Safari 확장 설치
 
-1. `securevault-safari-extension-0.6.0.zip`을 풀고 `SecureVault Safari.app`을 응용 프로그램 폴더로 옮깁니다.
+1. `securevault-safari-extension-0.6.1.zip`을 풀고 `SecureVault Safari.app`을 응용 프로그램 폴더로 옮깁니다.
 2. 처음 한 번은 Control-클릭 → **열기**로 실행합니다. 안 열리면 터미널에서 아래를 실행합니다.
    `xattr -dr com.apple.quarantine "/Applications/SecureVault Safari.app"`
 3. Safari 개발자 메뉴를 켭니다. Safari → 설정 → **고급** → "웹 개발자용 기능 보기"(이전 버전은 "메뉴 막대에서 개발자용 메뉴 보기")를 켭니다.

@@ -188,6 +188,11 @@ shoot_view 20-list-light list light
 shoot_view 21-detail-light detail light
 shoot_view 22-settings-light settings light
 shoot_view 23-edit-light edit light
+# v0.6.1 Face ID: settings toggle (always rendered on iOS) and lock screen button
+# (simulator has no Face ID; DEMO_VIEW=unlock keeps the dummy vault locked and
+# the UI still shows the Face ID button).
+shoot_view 25-settings-faceid-dark settings dark 16
+shoot_view 26-unlock-faceid-dark unlock dark 16
 
 if [ ! -s "$SCREEN_DIR/01-launch.png" ] || [ ! -s "$SCREEN_DIR/02-demo-entries.png" ]; then
   echo "Screenshots are missing." >&2

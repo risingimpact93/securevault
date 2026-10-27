@@ -5,13 +5,18 @@ import {
   copyToClipboard,
   deleteItem,
   generatePassword,
+  iosFaceIdDisable,
+  iosFaceIdEnable,
+  iosFaceIdStatus,
   mapError,
   openExternalUrl,
   updateItem,
 } from "../../api";
 import type {
   EmergencyKit as EmergencyKitData,
+  FaceIdStatus,
   GenerateOpts,
+  IosDemo,
   ItemDraft,
   ItemType,
   SyncStatus,
@@ -30,10 +35,6 @@ import { clearSiteIconCache, refreshSiteIcons, setSiteIconsEnabled, useSiteIcon,
 type Tab = "items" | "generator" | "settings";
 type Route = { kind: "list" } | { kind: "detail"; id: string } | { kind: "edit"; id: string | null };
 type TypeFilter = "all" | ItemType;
-
-export interface IosDemo {
-  view?: string | null;
-}
 
 interface Props {
   items: VaultItem[];
@@ -273,6 +274,142 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
+function FaceIdSettings({
+  demo,
+  onToast,
+}: {
+  demo: IosDemo | null;
+  onToast: (toast: Omit<Toast, "id">) => void;
+}) {
+  const [status, setStatus] = useState<FaceIdStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [prompt, setPrompt] = useState(false);
+  const [password, setPassword] = useState("");
+  const demoShow = demo?.view === "settings" || demo?.view === "faceid";
+
+  useEffect(() => {
+    let cancelled = false;
+    void iosFaceIdStatus()
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled && demoShow) {
+          setStatus({
+            supported: true,
+            available: true,
+            enrolled: true,
+            biometryType: "faceId",
+            enabled: false,
+            canUnlock: false,
+            itemPresent: false,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [demoShow]);
+
+  const visible = demoShow || status?.supported;
+  if (!visible) return null;
+
+  async function apply(next: FaceIdStatus) {
+    setStatus(next);
+    if (next.disabledToggle) {
+      onToast({
+        kind: "info",
+        message: "Face ID 정보가 바뀌었거나 없어 Face ID 잠금 해제를 껐습니다. 마스터 비밀번호를 입력하세요.",
+      });
+    }
+  }
+
+  async function turnOff() {
+    setBusy(true);
+    try {
+      apply(await iosFaceIdDisable());
+      onToast({ kind: "ok", message: "Face ID 잠금 해제를 껐습니다." });
+    } catch (e) {
+      onToast({ kind: "err", message: errText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function turnOn(pw: string) {
+    setBusy(true);
+    try {
+      apply(await iosFaceIdEnable(pw));
+      setPrompt(false);
+      setPassword("");
+      onToast({ kind: "ok", message: "Face ID 잠금 해제를 켰습니다." });
+    } catch (e) {
+      onToast({ kind: "err", message: errText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const enabled = !!status?.enabled;
+
+  return (
+    <>
+      <Group
+        header="잠금 해제"
+        footer="Face ID는 이 기기의 키체인에 금고를 여는 키만 저장합니다. 마스터 비밀번호와 Secret Key는 넣지 않습니다. 기기를 다시 시작하거나 7일이 지나면 마스터 비밀번호가 필요합니다."
+      >
+        <div className="ios-row ios-input-row">
+          <span className="ios-input-label grow">Face ID로 잠금 해제</span>
+          <Switch
+            checked={enabled}
+            label="Face ID로 잠금 해제"
+            onChange={(on) => {
+              if (busy) return;
+              if (on) setPrompt(true);
+              else void turnOff();
+            }}
+          />
+        </div>
+      </Group>
+      {prompt ? (
+        <div className="ios-sheet-backdrop" onClick={() => !busy && setPrompt(false)}>
+          <div className="ios-sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <form
+              className="ios-sheet-group"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!password) return;
+                void turnOn(password);
+              }}
+            >
+              <p className="ios-sheet-msg">Face ID를 켜려면 마스터 비밀번호를 확인하세요.</p>
+              <label className="ios-row ios-input-row">
+                <span className="ios-input-label">마스터 비밀번호</span>
+                <input
+                  className="ios-faceid-pw"
+                  type="password"
+                  autoFocus
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </label>
+              <button className="ios-sheet-btn bold" type="submit" disabled={busy || !password}>
+                {busy ? "확인 중…" : "켜기"}
+              </button>
+            </form>
+            <div className="ios-sheet-group">
+              <button type="button" className="ios-sheet-btn" disabled={busy} onClick={() => setPrompt(false)}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function SiteIconSettings({ onToast }: { onToast: (toast: Omit<Toast, "id">) => void }) {
   const on = useSiteIconsEnabled();
   return (
@@ -443,6 +580,8 @@ function SwipeRow({
 }
 
 /* ---------- main ---------- */
+
+export type { IosDemo };
 
 export default function IosMain(props: Props) {
   const { items, syncStatus, demo, onReload, onToast } = props;
@@ -1265,6 +1404,7 @@ function SettingsPage({
   theme,
   settings,
   syncStatus,
+  demo,
   scrolled,
   onLock,
   onToggleTheme,
@@ -1308,6 +1448,7 @@ function SettingsPage({
         </div>
       </Group>
       <SiteIconSettings onToast={onToast} />
+      <FaceIdSettings demo={demo} onToast={onToast} />
       <Group footer={`자동 잠금: ${settings.autoLockMinutes}분 동안 조작이 없으면 잠급니다. 아래에서 바꿀 수 있습니다.`}>
         <button type="button" className="ios-row ios-action-row" onClick={() => void onLock()}>
           지금 잠그기

@@ -9,7 +9,7 @@ SecureVault는 내 기기에만 저장되는 암호화 비밀번호 관리 앱�
 - 클립보드 복사 후 30초 뒤 자동 삭제 (그 사이 다른 걸 복사했으면 건드리지 않음)
 - 마우스·키보드·터치가 없으면 자동 잠금. 선택: 1분, 2분, 5분, 10분, 30분, 1시간 (기본 1분). 값은 암호화된 금고 안에 저장되어 데스크톱과 웹이 같은 설정을 씁니다
 - macOS 앱: 화면이 잠기거나 잠자기에 들어가면 즉시 잠그는 옵션
-- 생체 인증: macOS는 Touch ID, 웹은 패스키(WebAuthn). 마스터 비밀번호는 항상 사용할 수 있습니다. 프로세스를 다시 시작한 직후와 N일마다(기본 14일, 1–365일) 마스터 비밀번호가 다시 필요합니다
+- 생체 인증: macOS는 Touch ID, 웹은 패스키(WebAuthn), **iOS 앱은 Face ID**(키체인에 2SKD 파생 키만 저장, 재부팅·7일마다 마스터 비밀번호). 자세한 내용은 `docs/ios-face-id.md`. 마스터 비밀번호는 항상 사용할 수 있습니다. Mac/웹은 프로세스를 다시 시작한 직후와 N일마다(기본 14일, 1–365일) 마스터 비밀번호가 다시 필요합니다.
 - 별도 비밀번호로 암호화된 내보내기 / 가져오기 (병합 또는 교체)
 - 기기 간 동기화: 금고 파일을 iCloud Drive 같은 폴더로 옮기고, 저장 전에 항목 단위로 병합합니다. 새 기기의 첫 화면에서 **기존 금고 열기**로 그 파일을 고를 수 있습니다. 아래 "기기 간 동기화 (iCloud)"를 보세요
 - 다크/라이트 테마
@@ -213,7 +213,7 @@ iPhone/iPad 팁:
 
 - **linux-web** (ubuntu): `npm ci && npm run build`, `cargo test --workspace`, `securevault-web` 릴리스 빌드 후 바이너리를 artifact로 올려요.
 - **macos-app** (macos-14, arm64): Rust 테스트 후 tauri-action으로 `.app`/DMG를 빌드하고 DMG를 `securevault-macos-arm64-dmg` artifact로 올려요. DMG 파일 이름은 productName을 따르며 `SecureVault_0.4.0_aarch64.dmg`입니다.
-- **ios-app** (macos-15): 같은 React UI를 Tauri iOS 타깃으로 시뮬레이터에 빌드해요. 식별자는 `com.securevault.ios`이고 Mac 앱(`com.securevault.app`)과 키체인·컨테이너가 겹치지 않습니다. `src-tauri/gen/apple`은 커밋하지 않고 러너에서 `tauri ios init`으로 만들어요. 서명 없는 시뮬레이터 `.app`, 실행 화면 스크린샷, 그리고 실패해도 잡을 막지 않는 서명 없는 `.ipa`를 artifact로 올려요. TestFlight와 App Store 업로드는 하지 않습니다.
+- **ios-app** (macos-15): 같은 React UI를 Tauri iOS 타깃으로 시뮬레이터에 빌드해요. 식별자는 `com.securevault.ios`이고 Mac 앱(`com.securevault.app`)과 키체인·컨테이너가 겹치지 않습니다. Face ID는 Personal Team으로 설치한 실기기에서만 동작하고, 시뮬레이터 스크린샷은 더미 데이터로 토글·버튼을 그립니다 (`docs/ios-face-id.md`). `src-tauri/gen/apple`은 커밋하지 않고 러너에서 `tauri ios init`으로 만들어요. 서명 없는 시뮬레이터 `.app`, 실행 화면 스크린샷, 그리고 실패해도 잡을 막지 않는 서명 없는 `.ipa`를 artifact로 올려요. TestFlight와 App Store 업로드는 하지 않습니다.
 
 ### 서명 켜는 법
 저장소 Settings → Secrets and variables → Actions에 `APPLE_CERTIFICATE`(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`(앱 전용 암호), `APPLE_TEAM_ID`를 넣으면 다음 실행부터 서명·공증 단계가 자동으로 켜져요.

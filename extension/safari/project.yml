@@ -9,7 +9,7 @@ options:
     macOS: "13.0"
 settings:
   base:
-    MARKETING_VERSION: "0.6.0"
+    MARKETING_VERSION: "0.6.1"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual

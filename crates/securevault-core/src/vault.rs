@@ -839,6 +839,14 @@ fn fresh_unlocked(key: VaultKey, salt: Vec<u8>, params: KdfParams, data: VaultDa
 }
 
 impl UnlockedVault {
+    /// The 2SKD-derived key that decrypts the vault ciphertext.
+    ///
+    /// Face ID stores this, not the master password. Secret Key bytes stay in
+    /// the existing on-device store.
+    pub fn export_unlock_key(&self) -> VaultKey {
+        self.key.clone()
+    }
+
     pub fn items(&self) -> Vec<VaultItem> {
         self.data.items.clone()
     }
@@ -2143,6 +2151,28 @@ mod tests {
         let wrong_pw = unlock_file_with_secret_key(&path, &secret("nope"), Some(&sk.format_display()), None)
             .unwrap_err();
         assert!(matches!(wrong_pw, VaultError::WrongPassword));
+    }
+
+    #[test]
+    fn exported_derived_key_unlocks_without_the_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.khv");
+        let password = secret("derived-key-master");
+        let mut unlocked = create_vault_at(&path, &password).unwrap();
+        unlocked.data.items.push(sample_item());
+        let sk = unlocked.enable_secret_key(&password).unwrap();
+        persist_unlocked(&path, &mut unlocked).unwrap();
+
+        let opened = unlock_file_with_secret_key(&path, &password, Some(&sk.format_display()), None).unwrap();
+        let key = opened.export_unlock_key();
+        assert_eq!(key.as_bytes(), opened.key.as_bytes());
+        let again = unlock_file_with_key(&path, &key).unwrap();
+        assert_eq!(again.data.items, opened.data.items);
+        assert_eq!(again.key.as_bytes(), key.as_bytes());
+        assert!(matches!(
+            unlock_file_with_key(&path, &VaultKey::try_from_slice(&[9u8; KEY_LEN]).unwrap()).unwrap_err(),
+            VaultError::Tampered | VaultError::WrongPassword
+        ));
     }
 
     #[test]

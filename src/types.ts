@@ -107,6 +107,26 @@ export interface BiometricStatus {
   touchIdReregister?: boolean;
 }
 
+export type FaceIdReason =
+  | "notEnabled"
+  | "firstSetup"
+  | "rebooted"
+  | "expired"
+  | "itemMissing"
+  | "invalidated";
+
+export interface FaceIdStatus {
+  supported: boolean;
+  available: boolean;
+  enrolled: boolean;
+  biometryType: string;
+  enabled: boolean;
+  canUnlock: boolean;
+  itemPresent: boolean;
+  reason?: FaceIdReason;
+  disabledToggle?: boolean;
+}
+
 export interface SettingsPatch {
   autoLockMinutes?: number;
   lockOnScreenLock?: boolean;
@@ -190,3 +210,7 @@ export interface ConflictView {
 
 export type VaultLocationMode = "move" | "open";
 export type ConflictAction = "keep" | "restore";
+
+export interface IosDemo {
+  view?: string | null;
+}

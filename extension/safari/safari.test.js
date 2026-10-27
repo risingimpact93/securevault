@@ -15,7 +15,7 @@ describe("safari manifest", () => {
     expect(m.permissions).toEqual(chrome.permissions);
     expect(m.host_permissions).toBeUndefined();
     expect(m.content_scripts).toBeUndefined();
-    expect(m.version).toBe("0.6.0");
+    expect(m.version).toBe("0.6.1");
     expect(m.background.type).toBe("module");
     expect(m.browser_specific_settings.safari.strict_min_version).toBe("16.4");
   });

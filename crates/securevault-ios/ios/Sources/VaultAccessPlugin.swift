@@ -1,8 +1,20 @@
 import Foundation
+import LocalAuthentication
+import Security
 import Tauri
 import UIKit
 import UniformTypeIdentifiers
 import WebKit
+
+private let biometricService = "com.securevault.app.biometric"
+private let biometricAccount = "unlock-key"
+
+private enum BiometricErr: String {
+  case notFound
+  case invalidated
+  case cancelled
+  case failed
+}
 
 struct PickResult: Encodable {
   let path: String
@@ -246,6 +258,150 @@ class VaultAccessPlugin: Plugin {
     } catch {
       invoke.reject("[북마크] 북마크를 만들지 못했습니다. (\(error.localizedDescription))")
     }
+  }
+
+  // MARK: Face ID keychain (Personal Team: no access group, not iCloud)
+
+  @objc public func biometricStatus(_ invoke: Invoke) throws {
+    let ctx = LAContext()
+    var evalError: NSError?
+    let available = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &evalError)
+    let enrolled = available
+    let type: String
+    switch ctx.biometryType {
+    case .faceID: type = "faceId"
+    case .touchID: type = "touchId"
+    default: type = "none"
+    }
+    invoke.resolve([
+      "available": available,
+      "enrolled": enrolled,
+      "biometryType": type,
+      "itemPresent": Self.itemPresent(),
+    ])
+  }
+
+  @objc public func biometricStore(_ invoke: Invoke) throws {
+    struct Args: Decodable { let data: String }
+    let args = try invoke.parseArgs(Args.self)
+    guard let payload = Data(base64Encoded: args.data), !payload.isEmpty else {
+      invoke.reject(BiometricErr.failed.rawValue)
+      return
+    }
+    Self.deleteItem()
+    var createError: Unmanaged<CFError>?
+    guard let access = SecAccessControlCreateWithFlags(
+      nil,
+      kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+      .biometryCurrentSet,
+      &createError
+    ) else {
+      invoke.reject(BiometricErr.failed.rawValue)
+      return
+    }
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: biometricService,
+      kSecAttrAccount as String: biometricAccount,
+      kSecAttrAccessControl as String: access,
+      kSecAttrSynchronizable as String: false,
+      kSecValueData as String: payload,
+    ]
+    let status = SecItemAdd(query as CFDictionary, nil)
+    if status == errSecSuccess {
+      invoke.resolve(["ok": true])
+    } else if status == errSecUserCanceled || status == errSecAuthFailed {
+      invoke.reject(status == errSecUserCanceled ? BiometricErr.cancelled.rawValue : BiometricErr.failed.rawValue)
+    } else {
+      NSLog("SecureVault biometricStore SecItemAdd: %d", status)
+      invoke.reject(BiometricErr.failed.rawValue)
+    }
+  }
+
+  @objc public func biometricLoad(_ invoke: Invoke) throws {
+    struct Args: Decodable { let reason: String }
+    let args = try invoke.parseArgs(Args.self)
+    let reason = args.reason.isEmpty
+      ? "SecureVault 금고를 Face ID로 잠금 해제합니다."
+      : args.reason
+    let ctx = LAContext()
+    ctx.localizedFallbackTitle = "마스터 비밀번호 사용"
+    ctx.localizedCancelTitle = "취소"
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: biometricService,
+      kSecAttrAccount as String: biometricAccount,
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecUseAuthenticationContext as String: ctx,
+      kSecUseOperationPrompt as String: reason,
+    ]
+    // SecItemCopyMatching blocks while Face ID UI is up; never run it on the main thread.
+    DispatchQueue.global(qos: .userInitiated).async {
+      var result: CFTypeRef?
+      let status = SecItemCopyMatching(query as CFDictionary, &result)
+      if status == errSecSuccess, let data = result as? Data {
+        invoke.resolve(["data": data.base64EncodedString()])
+        return
+      }
+      invoke.reject(Self.mapLoadError(status, context: ctx).rawValue)
+    }
+  }
+
+  @objc public func biometricDelete(_ invoke: Invoke) throws {
+    Self.deleteItem()
+    invoke.resolve(["ok": true])
+  }
+
+  private static func itemPresent() -> Bool {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: biometricService,
+      kSecAttrAccount as String: biometricAccount,
+      kSecReturnData as String: false,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+    ]
+    let status = SecItemCopyMatching(query as CFDictionary, nil)
+    // Interaction-not-allowed means the item exists but Face ID would be required.
+    return status == errSecSuccess || status == errSecInteractionNotAllowed
+  }
+
+  private static func deleteItem() {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: biometricService,
+      kSecAttrAccount as String: biometricAccount,
+    ]
+    SecItemDelete(query as CFDictionary)
+  }
+
+  private static func mapLoadError(_ status: OSStatus, context: LAContext) -> BiometricErr {
+    if status == errSecItemNotFound {
+      return .notFound
+    }
+    if status == errSecUserCanceled {
+      return .cancelled
+    }
+    var evalError: NSError?
+    let stillEnrolled = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &evalError)
+    if let evalError {
+      switch evalError.code {
+      case LAError.userCancel.rawValue, LAError.appCancel.rawValue, LAError.systemCancel.rawValue, LAError.userFallback.rawValue:
+        return .cancelled
+      case LAError.biometryNotAvailable.rawValue, LAError.biometryNotEnrolled.rawValue:
+        return .invalidated
+      default:
+        break
+      }
+    }
+    if !stillEnrolled {
+      return .invalidated
+    }
+    if status == errSecAuthFailed {
+      return .failed
+    }
+    return .failed
   }
 
   @objc public func pickVault(_ invoke: Invoke) throws {

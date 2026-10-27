@@ -1,5 +1,6 @@
 mod autofill_host;
 mod ios_access;
+mod ios_face_id;
 #[cfg(target_os = "ios")]
 mod ios_bookmark;
 #[cfg(target_os = "ios")]
@@ -85,8 +86,10 @@ fn accept_password_unlock(app: &AppHandle, state: &AppState, mut unlocked: Unloc
     persist(app, &path, &mut unlocked)?;
     state.password_verified.store(true, Ordering::Relaxed);
     remember_settings(state, &unlocked.data.settings);
+    let key = unlocked.export_unlock_key();
     let mut guard = require_unlocked(state)?;
     *guard = Some(unlocked);
+    ios_face_id::on_password_unlock(app, &key);
     Ok(())
 }
 
@@ -289,6 +292,9 @@ async fn refresh_touch_id_if_enabled(app: &AppHandle, path: &Path) -> Result<(),
             unlocked.data.settings.biometrics_enabled,
         )
     };
+    if let Ok(key) = VaultKey::try_from_slice(&key_bytes) {
+        ios_face_id::refresh_stored_key(app, &key);
+    }
     if !enabled {
         key_bytes.zeroize();
         return Ok(());
@@ -987,6 +993,9 @@ async fn change_master_password(
             unlocked.data.settings.biometrics_enabled,
         )
     };
+    if let Ok(key) = VaultKey::try_from_slice(&key_bytes) {
+        ios_face_id::refresh_stored_key(&app, &key);
+    }
     if !enabled {
         key_bytes.zeroize();
         return Ok(());
@@ -1656,6 +1665,11 @@ fn prepare_demo_inner(app: &AppHandle) -> Result<(), String> {
     }
     unlocked.data.settings.auto_lock_minutes = 60;
     unlocked.dirty = true;
+    let view = securevault_core::env_var("DEMO_VIEW");
+    if matches!(view.as_deref(), Some("unlock") | Some("faceid")) {
+        persist(app, &path, &mut unlocked)?;
+        return Ok(());
+    }
     let state = app.state::<AppState>();
     accept_password_unlock(app, &state, unlocked)
 }
@@ -1733,6 +1747,11 @@ pub fn run() {
             biometric_enable,
             biometric_disable,
             biometric_unlock,
+            ios_face_id::ios_face_id_status,
+            ios_face_id::ios_face_id_enable,
+            ios_face_id::ios_face_id_disable,
+            ios_face_id::ios_face_id_unlock,
+            ios_face_id::verify_master_password,
             sync_status,
             sync_conflicts,
             resolve_sync_conflict,

@@ -10,6 +10,7 @@ pub const GIT_COMMIT: &str = env!("SECUREVAULT_GIT_HASH");
 pub mod autofill;
 #[cfg(unix)]
 pub mod autofill_ipc;
+pub mod biometric_policy;
 pub mod emergency_kit;
 pub mod favicon;
 pub mod ios_path;

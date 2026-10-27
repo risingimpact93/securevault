@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SecureVault",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "SecureVault 데스크톱 앱의 로그인 정보를 현재 사이트에 채웁니다.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzlwaTIIV1mMiFYYSxqSrWmiJlqtq7W46AvbnGtkXZBUsHpsVBpqpeeCookgy2TzSHrjNe6UcG/SZc1CJCYa2MT7gP5l+qR5sg5cbT0ZPuRlLrGAoysupKlAOTiicWbuKNfJmfbLSAXoWV+TWxI61tFzrghnoXtXs5hfkQJwXku2TOEbIiFAudkm8TOeq/DiwbmFspqKh/hL7JmmxrfpB701W45jNmmm7otmUsWyM4yBM76PoQTFDnLZIYYnwYZ5cYpD/PEvlQk7uOsi7Rt2ChAUa+LWTftH0KnZlJh+SN438SKq7egIYUCqxn11bakkQ4ZQM2cww60b3lsrIYD4HxwIDAQAB",
   "minimum_chrome_version": "116",

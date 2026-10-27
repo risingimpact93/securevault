@@ -57,3 +57,27 @@ for f in $(find "$APPLE" -name project.pbxproj 2>/dev/null); do
   ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   echo "ios-prepare: ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon set in $(grep -c 'ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;' "$f") build configuration(s) of $f."
 done
+
+# 4. NSFaceIDUsageDescription must survive `tauri ios init` regeneration.
+#    tauri.ios.conf.json already points at Info.ios.plist; this copies the
+#    string into generated Info.plist files if init dropped it.
+FACEID_KEY="NSFaceIDUsageDescription"
+FACEID_MSG="SecureVault 금고를 Face ID로 잠금 해제합니다."
+for f in $(find "$APPLE" -name 'Info.plist' 2>/dev/null); do
+  [ -f "$f" ] || continue
+  if grep -q "$FACEID_KEY" "$f"; then
+    continue
+  fi
+  python3 - "$f" "$FACEID_KEY" "$FACEID_MSG" <<'PY'
+import sys
+path, key, msg = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path, encoding="utf-8").read()
+needle = "</dict>"
+insert = f"  <key>{key}</key>\n  <string>{msg}</string>\n"
+idx = text.rfind(needle)
+if idx < 0:
+    raise SystemExit(0)
+open(path, "w", encoding="utf-8").write(text[:idx] + insert + text[idx:])
+print(f"ios-prepare: added {key} to {path}")
+PY
+done

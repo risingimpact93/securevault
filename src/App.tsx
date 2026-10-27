@@ -22,11 +22,11 @@ import {
 } from "./api";
 import ApprovalModal, { DEMO_APPROVAL } from "./components/ApprovalModal";
 import MainScreen from "./components/MainScreen";
-import IosMain, { type IosDemo } from "./components/ios/IosMain";
+import IosMain from "./components/ios/IosMain";
 import SecretKeyScreen from "./components/SecretKeyScreen";
 import SetupScreen from "./components/SetupScreen";
 import UnlockScreen from "./components/UnlockScreen";
-import type { ApprovalRequest, SyncStatus, Toast, VaultItem, VaultSettings } from "./types";
+import type { ApprovalRequest, IosDemo, SyncStatus, Toast, VaultItem, VaultSettings } from "./types";
 import { DEFAULT_VAULT_SETTINGS } from "./types";
 
 type Screen = "loading" | "setup" | "secret-key" | "unlock" | "main";
@@ -424,7 +424,15 @@ export default function App() {
           }}
         />
       ) : null}
-      {screen === "unlock" ? <UnlockScreen onUnlock={handleUnlock} onBiometric={handleBiometric} /> : null}
+      {screen === "unlock" ? (
+        <UnlockScreen
+          onUnlock={handleUnlock}
+          onBiometric={handleBiometric}
+          onOpened={enterMain}
+          iosUi={iosUi}
+          demo={demo}
+        />
+      ) : null}
       {screen === "main" && iosUi ? (
         <IosMain
           items={items}

@@ -186,3 +186,147 @@ impl<R: Runtime> ScopedFile<R> {
             .map_err(|err| err.to_string())
     }
 }
+
+/// Hardware + keychain existence. No Face ID prompt.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiometricHwStatus {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub enrolled: bool,
+    #[serde(default)]
+    pub biometry_type: String,
+    #[serde(default)]
+    pub item_present: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiometricLoadError {
+    NotFound,
+    Invalidated,
+    Cancelled,
+    Failed,
+    Unsupported,
+}
+
+impl BiometricLoadError {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "notFound",
+            Self::Invalidated => "invalidated",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    fn from_plugin(err: &str) -> Self {
+        let lower = err.to_ascii_lowercase();
+        if lower.contains("notfound") {
+            Self::NotFound
+        } else if lower.contains("invalidated") {
+            Self::Invalidated
+        } else if lower.contains("cancelled") || lower.contains("canceled") {
+            Self::Cancelled
+        } else if lower.contains("unsupported") {
+            Self::Unsupported
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+impl std::fmt::Display for BiometricLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn plugin_handle<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<tauri::plugin::PluginHandle<R>, String> {
+    app.try_state::<VaultAccess<R>>()
+        .ok_or_else(|| "vault-access 플러그인이 등록되지 않았습니다.".to_string())
+        .map(|state| state.handle.clone())
+}
+
+#[cfg(target_os = "ios")]
+pub async fn biometric_status<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<BiometricHwStatus, String> {
+    let handle = plugin_handle(app)?;
+    handle
+        .run_mobile_plugin_async("biometricStatus", ())
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "ios")]
+pub async fn biometric_store<R: Runtime>(app: &tauri::AppHandle<R>, data_b64: &str) -> Result<(), BiometricLoadError> {
+    #[derive(serde::Serialize)]
+    struct Args<'a> {
+        data: &'a str,
+    }
+    let handle = plugin_handle(app).map_err(|_| BiometricLoadError::Failed)?;
+    handle
+        .run_mobile_plugin_async::<serde::de::IgnoredAny>("biometricStore", Args { data: data_b64 })
+        .await
+        .map(|_| ())
+        .map_err(|err| BiometricLoadError::from_plugin(&err.to_string()))
+}
+
+#[cfg(target_os = "ios")]
+pub async fn biometric_load<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    reason: &str,
+) -> Result<String, BiometricLoadError> {
+    #[derive(serde::Serialize)]
+    struct Args<'a> {
+        reason: &'a str,
+    }
+    #[derive(Deserialize)]
+    struct Reply {
+        data: String,
+    }
+    let handle = plugin_handle(app).map_err(|_| BiometricLoadError::Failed)?;
+    handle
+        .run_mobile_plugin_async::<Reply>("biometricLoad", Args { reason })
+        .await
+        .map(|reply| reply.data)
+        .map_err(|err| BiometricLoadError::from_plugin(&err.to_string()))
+}
+
+#[cfg(target_os = "ios")]
+pub async fn biometric_delete<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let handle = plugin_handle(app)?;
+    handle
+        .run_mobile_plugin_async::<serde::de::IgnoredAny>("biometricDelete", ())
+        .await
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(target_os = "ios"))]
+pub async fn biometric_status<R: Runtime>(_app: &tauri::AppHandle<R>) -> Result<BiometricHwStatus, String> {
+    Err("unsupported".into())
+}
+
+#[cfg(not(target_os = "ios"))]
+pub async fn biometric_store<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _data_b64: &str,
+) -> Result<(), BiometricLoadError> {
+    Err(BiometricLoadError::Unsupported)
+}
+
+#[cfg(not(target_os = "ios"))]
+pub async fn biometric_load<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _reason: &str,
+) -> Result<String, BiometricLoadError> {
+    Err(BiometricLoadError::Unsupported)
+}
+
+#[cfg(not(target_os = "ios"))]
+pub async fn biometric_delete<R: Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
+    Err("unsupported".into())
+}

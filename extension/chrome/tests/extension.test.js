@@ -28,7 +28,7 @@ describe("manifest", () => {
     expect(manifest.permissions.sort()).toEqual(["activeTab", "nativeMessaging", "scripting"]);
     expect(manifest.host_permissions).toBeUndefined();
     expect(manifest.content_scripts).toBeUndefined();
-    expect(manifest.version).toBe("0.6.0");
+    expect(manifest.version).toBe("0.6.1");
   });
 });
 

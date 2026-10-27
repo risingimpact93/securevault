@@ -4,6 +4,7 @@ import type {
   AccessLogEntry,
   ApprovalRequest,
   BiometricStatus,
+  FaceIdStatus,
   GenerateOpts,
   ImportMode,
   IssuedMcpToken,
@@ -100,6 +101,15 @@ export function mapError(message: string): string {
     "biometrics invalidated": "생체 정보가 바뀌어 생체 인증을 쓸 수 없습니다. 마스터 비밀번호로 여세요.",
     "passkey session only": "패스키만으로는 잠긴 금고를 열 수 없습니다. 마스터 비밀번호를 사용하세요.",
     cancelled: "생체 인증이 취소되었습니다.",
+    unsupported: "이 환경에서는 Face ID를 사용할 수 없습니다.",
+    notFound: "Face ID 정보가 바뀌었거나 없어 Face ID 잠금 해제를 껐습니다. 마스터 비밀번호를 입력하세요.",
+    invalidated: "Face ID 정보가 바뀌었거나 없어 Face ID 잠금 해제를 껐습니다. 마스터 비밀번호를 입력하세요.",
+    itemMissing: "Face ID 정보가 바뀌었거나 없어 Face ID 잠금 해제를 껐습니다. 마스터 비밀번호를 입력하세요.",
+    rebooted: "기기를 다시 시작해 마스터 비밀번호가 필요합니다.",
+    expired: "보안을 위해 7일마다 마스터 비밀번호가 필요합니다.",
+    firstSetup: "처음 설정할 때는 마스터 비밀번호가 필요합니다.",
+    notEnabled: "Face ID 잠금 해제가 꺼져 있습니다.",
+    failed: "Face ID에 실패했습니다. 마스터 비밀번호를 입력하세요.",
     "passkeys require http://localhost": "패스키는 http://localhost 주소로 열어야 합니다.",
     "vault file needs a different password": "이 금고 파일의 비밀번호가 현재 비밀번호와 다릅니다.",
     "waiting for iCloud download": "iCloud에서 금고 파일을 내려받는 중입니다. 잠시 후 다시 시도하세요.",
@@ -335,6 +345,38 @@ export async function biometricEnable(): Promise<BiometricStatus> {
 export async function biometricDisable(): Promise<BiometricStatus> {
   if (isTauri()) return invoke<BiometricStatus>("biometric_disable");
   return http<BiometricStatus>("/api/webauthn/credential", { method: "DELETE" });
+}
+
+export async function iosFaceIdStatus(): Promise<FaceIdStatus> {
+  if (!isTauri()) {
+    return {
+      supported: false,
+      available: false,
+      enrolled: false,
+      biometryType: "none",
+      enabled: false,
+      canUnlock: false,
+      itemPresent: false,
+      reason: "notEnabled",
+    };
+  }
+  return invoke<FaceIdStatus>("ios_face_id_status");
+}
+
+export async function iosFaceIdEnable(password: string): Promise<FaceIdStatus> {
+  return invoke<FaceIdStatus>("ios_face_id_enable", { password });
+}
+
+export async function iosFaceIdDisable(): Promise<FaceIdStatus> {
+  return invoke<FaceIdStatus>("ios_face_id_disable");
+}
+
+export async function iosFaceIdUnlock(): Promise<void> {
+  await invoke("ios_face_id_unlock");
+}
+
+export async function verifyMasterPassword(password: string): Promise<void> {
+  await invoke("verify_master_password", { password });
 }
 
 export async function biometricUnlock(): Promise<void> {
