@@ -16,10 +16,23 @@ command -v xcodegen >/dev/null || { echo "xcodegen missing: brew install xcodege
 
 team="${SV_TEAM_ID:-}"
 if [ -z "$team" ]; then
-  team="$(security find-certificate -c "Apple Development" -p 2>/dev/null \
-    | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -n1)"
+  # First valid "Apple Development" identity; its certificate subject OU is the team ID.
+  ident="$(security find-identity -v -p codesigning | awk '/"Apple Development:/{print $2; exit}')"
+  if [ -n "$ident" ]; then
+    team="$(security find-certificate -a -Z -p -c "Apple Development" 2>/dev/null \
+      | awk -v h="$ident" '/^SHA-1 hash:/{keep=($3==h)} keep' \
+      | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -n1)"
+  fi
 fi
-[ -n "$team" ] || { echo "No team. Xcode > Settings > Accounts: add your Apple ID (Personal Team), then rerun or set SV_TEAM_ID." >&2; exit 1; }
+if [ -z "$team" ]; then
+  cat >&2 <<'HELP'
+No Apple Development signing identity found.
+  1. Open Xcode > Settings > Accounts, click +, add your Apple ID (a free "Personal Team" is created).
+  2. Select the team > Manage Certificates > + > Apple Development.
+  3. Rerun this script (or set SV_TEAM_ID=<10-char team ID shown in Accounts>).
+HELP
+  exit 1
+fi
 echo "Signing team: $team"
 
 # 1. Stage shared JS + manifest (same as CI).
@@ -32,11 +45,19 @@ rm -rf "$build"
 xcodebuild -project "$safari/SecureVaultSafari.xcodeproj" -scheme SecureVaultSafari \
   -configuration Release -derivedDataPath "$build" -allowProvisioningUpdates \
   CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM="$team" \
+  ENABLE_HARDENED_RUNTIME=NO CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
   build | tail -n 15
 app="$build/Build/Products/Release/SecureVault Safari.app"
 codesign --verify --deep --strict "$app"
-codesign -dv "$app/Contents/PlugIns/SecureVaultSafariExtension.appex" 2>&1 | grep -E "Authority=Apple Development|TeamIdentifier" \
-  || { echo "appex is not signed with an Apple Development identity" >&2; exit 1; }
+# Safari 26 treats ad-hoc as unsigned: both bundles must carry a real TeamIdentifier.
+for b in "$app" "$app/Contents/PlugIns/SecureVaultSafariExtension.appex"; do
+  info="$(codesign -dvvv "$b" 2>&1)"
+  tid="$(printf '%s\n' "$info" | sed -n 's/^TeamIdentifier=//p')"
+  if [ -z "$tid" ] || [ "$tid" = "not set" ] || printf '%s' "$info" | grep -q "Signature=adhoc"; then
+    echo "not signed with a team: $b" >&2; exit 1
+  fi
+  echo "signed: $(basename "$b")  TeamIdentifier=$tid"
+done
 
 # 3. Install and register.
 osascript -e 'quit app "SecureVault Safari"' >/dev/null 2>&1 || true

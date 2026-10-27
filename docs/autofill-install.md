@@ -61,9 +61,11 @@
 6. 목록에서 **SecureVault**를 체크해 켭니다.
 7. 처음 사용할 때 Safari가 사이트 접근 허용을 물으면, 그 사이트에서만 허용(예: "하루 동안 허용" 또는 "항상 허용")을 고릅니다.
 
-### 5-1. Safari 목록에 SecureVault가 안 보일 때: 내 Mac에서 Personal Team으로 서명해 빌드
+### 5-1. (필수) 내 Mac에서 Personal Team으로 서명해 빌드
 
-CI 빌드는 ad-hoc 서명이라 Team ID가 없습니다. 위 단계를 다 했는데도 설정 > 확장 프로그램에 SecureVault가 없으면, Xcode가 있는 Mac에서 무료 Apple ID(Personal Team)로 직접 서명해 빌드합니다. 이 스크립트는 repo에 비밀 정보를 쓰지 않습니다. Team ID는 실행한 셸 안에서만 쓰입니다.
+> CI 아티팩트 `securevault-safari-extension`은 ad-hoc 서명이라 **빌드 확인용**입니다. Safari 26은 ad-hoc 서명을 '서명 없음'으로 처리합니다. 실제 로그: "Extension ... does not have a code signature". 그래서 '서명되지 않은 확장 프로그램 허용'을 켜도 목록에 나오지 않습니다. Safari에서 쓰려면 아래 로컬 빌드가 필요합니다.
+
+Xcode가 있는 Mac에서 무료 Apple ID(Personal Team)로 직접 서명해 빌드합니다. 이 스크립트는 repo에 비밀 정보를 쓰지 않습니다. Team ID는 실행한 셸 안에서만 쓰입니다.
 
 1. Xcode > Settings > Accounts에서 Apple ID를 추가합니다. Personal Team이 생기고 Apple Development 인증서가 만들어집니다.
 2. `brew install xcodegen`
