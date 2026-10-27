@@ -50,4 +50,16 @@ describe("swift relay stays in sync", () => {
       "/Library/Application Support/com.securevault.app/autofill/",
     ]);
   });
+  it("matches the Xcode template shape Safari lists", async () => {
+    const { safariManifest } = await import("../../scripts/safari-manifest.mjs");
+    const fs = await import("node:fs");
+    const chrome = JSON.parse(fs.readFileSync(new URL("../chrome/manifest.json", import.meta.url)));
+    const m = safariManifest(chrome);
+    expect(m.background).toEqual({ service_worker: "background.js", type: "module" });
+    for (const f of Object.values(m.icons)) expect(fs.existsSync(new URL("../chrome/" + f, import.meta.url))).toBe(true);
+    expect(m.icons["512"]).toBeTruthy();
+    const plist = read("Extension/Info.plist");
+    for (const k of ["SFSafariWebExtensionConverterVersion", "NSHumanReadableDescription", "CFBundleDisplayName", "LSMinimumSystemVersion"]) expect(plist).toContain(k);
+    expect(read("project.yml")).toContain("CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO");
+  });
 });

@@ -11,11 +11,11 @@ out="$root/dist-extension"
 
 # 1. Shared web extension files (same JS as Chrome) + derived manifest.
 rm -rf "$res" && mkdir -p "$res"
-(cd "$chrome" && cp -R background.js popup.html popup.js popup.css lib "$res/")
+(cd "$chrome" && cp -R background.js popup.html popup.js popup.css lib icons "$res/")
 node "$root/scripts/safari-manifest.mjs" "$chrome/manifest.json" "$res/manifest.json"
 if grep -rIl "PRIVATE KEY" "$res" >/dev/null; then echo "private key material found" >&2; exit 1; fi
 
-[ "$(uname)" = "Darwin" ] || { echo "resources staged in $res (xcodebuild needs macOS)"; exit 0; }
+if [ "$(uname)" != "Darwin" ] || [ -n "${SV_STAGE_ONLY:-}" ]; then echo "resources staged in $res"; exit 0; fi
 
 # 2. Xcode project + build.
 (cd "$safari" && xcodegen generate --quiet)
@@ -28,7 +28,7 @@ app="$build/Build/Products/Release/SecureVault Safari.app"
 codesign --verify --deep --strict "$app"
 codesign -d --entitlements - "$app/Contents/PlugIns/SecureVaultSafariExtension.appex" >/dev/null
 res="$app/Contents/PlugIns/SecureVaultSafariExtension.appex/Contents/Resources"
-for f in manifest.json background.js popup.html lib/logic.js lib/fields.js; do
+for f in manifest.json background.js popup.html lib/logic.js lib/fields.js icons/icon-128.png icons/icon-512.png; do
   [ -f "$res/$f" ] || { echo "missing $f at appex Resources root" >&2; exit 1; }
 done
 

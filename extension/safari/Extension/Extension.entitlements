@@ -4,6 +4,8 @@
 <dict>
   <!-- Safari web extensions must be sandboxed. -->
   <key>com.apple.security.app-sandbox</key><true/>
+  <!-- Same as the Xcode Safari Extension App template. -->
+  <key>com.apple.security.files.user-selected.read-only</key><true/>
   <!-- The only hole: the main app's private autofill folder (socket + token).
        Ad-hoc signing cannot use App Groups (they need a Team ID), and the main
        app is not sandboxed, so we point at its real data folder instead.

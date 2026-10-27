@@ -12,6 +12,9 @@
   <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <key>NSHumanReadableDescription</key><string>SecureVault 데스크톱 앱의 로그인 정보를 현재 사이트에 채웁니다.</string>
+  <key>NSHumanReadableCopyright</key><string>SecureVault</string>
+  <key>SFSafariWebExtensionConverterVersion</key><string>15.4</string>
   <key>NSExtension</key>
   <dict>
     <key>NSExtensionPointIdentifier</key><string>com.apple.Safari.web-extension</string>

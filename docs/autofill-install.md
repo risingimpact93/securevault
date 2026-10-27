@@ -61,6 +61,37 @@
 6. 목록에서 **SecureVault**를 체크해 켭니다.
 7. 처음 사용할 때 Safari가 사이트 접근 허용을 물으면, 그 사이트에서만 허용(예: "하루 동안 허용" 또는 "항상 허용")을 고릅니다.
 
+### 5-1. Safari 목록에 SecureVault가 안 보일 때: 내 Mac에서 Personal Team으로 서명해 빌드
+
+CI 빌드는 ad-hoc 서명이라 Team ID가 없습니다. 위 단계를 다 했는데도 설정 > 확장 프로그램에 SecureVault가 없으면, Xcode가 있는 Mac에서 무료 Apple ID(Personal Team)로 직접 서명해 빌드합니다. 이 스크립트는 repo에 비밀 정보를 쓰지 않습니다. Team ID는 실행한 셸 안에서만 쓰입니다.
+
+1. Xcode > Settings > Accounts에서 Apple ID를 추가합니다. Personal Team이 생기고 Apple Development 인증서가 만들어집니다.
+2. `brew install xcodegen`
+3. repo 루트에서 아래 명령을 실행합니다. `SV_TEAM_ID`를 생략하면 키체인의 Apple Development 인증서에서 Team ID를 읽습니다.
+   ```
+   SV_TEAM_ID=<10자리 팀 ID> bash scripts/build-safari-local.sh
+   ```
+4. 스크립트가 서명을 확인하고 `/Applications`에 설치한 뒤 앱을 한 번 실행합니다.
+5. Safari를 Cmd+Q로 완전히 종료했다가 다시 엽니다. 설정 > 확장 프로그램에서 SecureVault를 켭니다. 개발 인증서로 서명했으므로 '서명되지 않은 확장 프로그램 허용'은 필요 없습니다.
+6. 서명이나 프로파일이 만료되면 스크립트를 다시 실행합니다.
+
+### 5-2. 진단 명령
+
+아래 명령은 결과를 읽기만 하고 아무것도 바꾸지 않습니다.
+
+```
+A="/Applications/SecureVault Safari.app"; X="$A/Contents/PlugIns/SecureVaultSafariExtension.appex"
+codesign -dvvv --entitlements - "$A"; codesign -dvvv --entitlements - "$X"   # Authority, TeamIdentifier, flags=runtime, entitlements
+codesign --verify --deep --strict -vvv "$A"
+spctl -a -vvv -t exec "$A"                                                    # ad-hoc이면 rejected가 정상(Gatekeeper)
+pluginkit -mAvvv -p com.apple.Safari.web-extension                            # 경로, 버전, parent bundle, 활성(+/-) 표시
+plutil -lint "$X/Contents/Info.plist" "$A/Contents/Info.plist"
+plutil -lint "$X/Contents/Resources/manifest.json"                            # JSON 문법 확인
+log stream --style compact --predicate 'process == "Safari" OR process CONTAINS "WebExtension" OR subsystem CONTAINS "Extension" OR eventMessage CONTAINS[c] "securevault"'
+#   ↑ 실행해 둔 채 Safari 설정 > 확장 프로그램을 열고, 출력된 내용을 저장합니다.
+defaults read com.apple.Safari ExtensionsEnabled 2>/dev/null                  # 0이면 확장 기능 전체가 꺼진 상태
+```
+
 ## 6. 동작 확인
 
 1. SecureVault 앱이 실행 중이고 잠금 해제 상태이며 '브라우저 확장 연결'이 켜져 있는지 확인합니다.

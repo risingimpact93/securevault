@@ -4,7 +4,10 @@ export function safariManifest(chrome) {
   const m = structuredClone(chrome);
   delete m.key;
   delete m.minimum_chrome_version;
-  m.background = { service_worker: "background.js", scripts: ["background.js"], type: "module", preferred_environment: ["service_worker"] };
+  // Same shape as Xcode's Safari Extension App template (MV3 module service worker).
+  m.background = { service_worker: "background.js", type: "module" };
+  // Safari's Settings > Extensions list uses the larger icon sizes.
+  m.icons = { ...m.icons, "96": "icons/icon-96.png", "256": "icons/icon-256.png", "512": "icons/icon-512.png" };
   m.browser_specific_settings = { safari: { strict_min_version: "16.4" } };
   return m;
 }

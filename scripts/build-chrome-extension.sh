@@ -8,7 +8,7 @@ out="$root/dist-extension"
 name="securevault-chrome-extension-$version"
 rm -rf "$out/$name" "$out/$name.zip"
 mkdir -p "$out/$name"
-(cd "$src" && cp -R manifest.json background.js popup.html popup.js popup.css lib "$out/$name/")
+(cd "$src" && cp -R manifest.json background.js popup.html popup.js popup.css lib icons "$out/$name/")
 # Guard: never ship a private key.
 if grep -rIl "PRIVATE KEY" "$out/$name" >/dev/null; then
   echo "private key material found; refusing to package" >&2
