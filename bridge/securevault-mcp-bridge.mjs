@@ -4,12 +4,16 @@
 
 import { createInterface } from "node:readline";
 
-function envValue(suffix) {
-  const primary = process.env[`SECUREVAULT_${suffix}`];
-  if (primary && primary.trim()) return primary.trim();
-  const legacy = process.env[`KEYHAVEN_${suffix}`];
-  if (legacy && legacy.trim()) return legacy.trim();
-  return "";
+import { envValue } from "./env.mjs";
+
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  process.stdout.write(
+    "SecureVault MCP stdio bridge\n" +
+      "Usage: node securevault-mcp-bridge.mjs < JSON-RPC lines\n" +
+      "Env: SECUREVAULT_MCP_URL (default http://127.0.0.1:47821/mcp), SECUREVAULT_MCP_TOKEN\n" +
+      "     KEYHAVEN_MCP_URL / KEYHAVEN_MCP_TOKEN are read when the new names are unset.\n",
+  );
+  process.exit(0);
 }
 
 const url = envValue("MCP_URL") || "http://127.0.0.1:47821/mcp";
